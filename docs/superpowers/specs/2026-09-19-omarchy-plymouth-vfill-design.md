@@ -116,7 +116,9 @@ A recolour:
    On this machine `aurora`, `dracula` and `texas-longhorns` ship no
    `unlock.png`; every other installed theme does.
 3. Rewrites `Window.SetBackgroundTopColor` / `...BottomColor` in the script to
-   the theme background.
+   the theme background. These take three floats in the range 0–1, not hex, so
+   the colour is converted the same way `omarchy-plymouth-set` does
+   (`#140F1F` becomes `0.078, 0.059, 0.122`).
 4. Writes the marker and rebuilds the initramfs.
 
 The logo is used at whatever size it comes in. The script reads the image's own
