@@ -13,9 +13,9 @@ mode = "dark"
 
 accent = "#8be9fd"
 
-background = "#140F1F"
 dark_background = "#21222c"
 lighter_background = "#343746"
+background = "#140F1F"
 
 foreground = "#DFEDE5"
 EOF
