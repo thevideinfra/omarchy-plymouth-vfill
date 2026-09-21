@@ -93,3 +93,18 @@ vfill_marker_matches() {
 
   return 0
 }
+
+# Mirrors the detection omarchy-plymouth-set performs, with dracut added for
+# distributions that do not use mkinitcpio. Only the limine-mkinitcpio path has
+# been exercised on real hardware; see README.
+vfill_initramfs_command() {
+  if command -v limine-mkinitcpio >/dev/null; then
+    printf 'limine-mkinitcpio\n'
+  elif command -v mkinitcpio >/dev/null; then
+    printf 'mkinitcpio -P\n'
+  elif command -v dracut >/dev/null; then
+    printf 'dracut --force\n'
+  else
+    return 1
+  fi
+}
