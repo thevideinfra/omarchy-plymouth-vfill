@@ -25,11 +25,26 @@ HOOK_STAGED="$HOME/.config/omarchy/hooks/omarchy-vfill.sh.uninstalling"
 
 source "$REPO/lib/vfill.sh"
 
+# Recover from an earlier interrupted run. A staged file with no live hook
+# was left behind mid-uninstall and never made it back; put it back before
+# doing anything else. A staged file alongside a live hook is stale -- the
+# live hook is the real one -- so just drop the leftover copy.
+if [[ -f $HOOK_STAGED && ! -f $HOOK_DEST ]]; then
+  echo "uninstall: recovering a hook left staged by an earlier interrupted run"
+  mv -- "$HOOK_STAGED" "$HOOK_DEST" || {
+    echo "uninstall: failed to recover the staged hook" >&2
+    exit 1
+  }
+elif [[ -f $HOOK_STAGED && -f $HOOK_DEST ]]; then
+  echo "uninstall: removing a stale staged hook copy from an earlier interrupted run"
+  rm -f -- "$HOOK_STAGED"
+fi
+
 # Move the hook aside rather than deleting it: a theme change mid-uninstall
-# must not retheme against a half-removed install, but a failed or cancelled
-# privileged transaction below must not silently leave the theme installed
-# with nothing keeping it current -- so the hook needs to come back in that
-# case.
+# must not retheme against a half-removed install, but a failed, cancelled,
+# or interrupted privileged transaction below must not silently leave the
+# theme installed with nothing keeping it current -- so the hook needs to
+# come back in that case.
 hook_staged=false
 if [[ -f $HOOK_DEST ]]; then
   mv -- "$HOOK_DEST" "$HOOK_STAGED" || {
@@ -44,10 +59,41 @@ restore_hook() {
   mv -- "$HOOK_STAGED" "$HOOK_DEST"
 }
 
+# outcome tracks whether the staging window has already been resolved (the
+# transaction finished, one way or the other), so a signal that lands after
+# that point -- e.g. during the final echo -- never re-restores a hook that a
+# successful run has already deleted, and the handler below knows not to act.
+outcome=pending
+
+# A foreground Ctrl-C at the sudo/pkexec password prompt reaches this
+# script's whole process group, not just the child, so the window between
+# staging the hook and resolving the transaction needs its own signal
+# handling: without it, that is the most common way to strand the hook at
+# HOOK_STAGED, never restored and never executed again.
+on_signal() {
+  local sig="$1"
+  trap '' INT TERM HUP
+  if [[ $outcome == pending ]]; then
+    outcome=interrupted
+    restore_hook
+    echo "uninstall: interrupted; restored the hook. The theme is still installed." >&2
+  fi
+  case "$sig" in
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+    HUP) exit 129 ;;
+    *) exit 1 ;;
+  esac
+}
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
+
 # Detected as the user; the root shell below deliberately sources nothing
 # from the checkout.
 rebuild=$(vfill_initramfs_command) || {
   echo "uninstall: no initramfs tool found" >&2
+  outcome=failed
   restore_hook
   exit 1
 }
@@ -72,9 +118,13 @@ if run_root /bin/bash -c '
   rm -rf -- "$theme_dest" "$prefix"
   "$@"
 ' bash "$THEME_DEST" "$PREFIX" "${rebuild_cmd[@]}"; then
+  outcome=succeeded
+  trap - INT TERM HUP
   $hook_staged && rm -f -- "$HOOK_STAGED"
   echo "uninstall: done. The stock Omarchy splash returns on the next boot."
 else
+  outcome=failed
+  trap - INT TERM HUP
   restore_hook
   echo "uninstall: did not complete -- authentication was cancelled or the privileged step failed." >&2
   echo "uninstall: the theme is still installed and the hook is still in place." >&2
