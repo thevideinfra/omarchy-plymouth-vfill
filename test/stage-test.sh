@@ -7,6 +7,10 @@ source "$ROOT/lib/vfill.sh"
 
 command -v magick >/dev/null || fail "magick is available"
 
+pixel_hex() {
+  magick "$1" -format '%[hex:p{2,2}]' info: | cut -c1-6
+}
+
 scratch=$(new_scratch_dir)
 trap 'rm -rf -- "$scratch"' EXIT
 
@@ -38,6 +42,11 @@ pass "staging produces every required asset"
   fail "staging does not copy the unused progress bar assets"
 pass "staging does not copy the unused progress bar assets"
 
+for asset in entry.png lock.png bullet.png; do
+  assert_equals "DFEDE5" "$(pixel_hex "$dest/$asset")" \
+    "$asset is recoloured to the foreground"
+done
+
 assert_equals "Window.SetBackgroundTopColor(0.078, 0.059, 0.122);" \
   "$(grep -m1 '^Window.SetBackgroundTopColor' "$dest/omarchy-vfill.script")" \
   "the background is written into the staged script"
@@ -60,3 +69,6 @@ vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" ||
 pass "staging succeeds for a theme without unlock.png"
 [[ -f $dest/logo.png ]] || fail "the fallback logo is rendered to logo.png"
 pass "the fallback logo is rendered to logo.png"
+
+assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
+  "the fallback logo is recoloured to the foreground"
