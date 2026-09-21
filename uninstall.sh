@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Remove the omarchy-vfill theme and hook, and hand the boot splash back to
-# Omarchy's own theme.
+# Remove the omarchy-vfill theme, and hand the boot splash back to Omarchy's
+# own theme. Also removes a theme-set hook left by an earlier install that
+# recoloured the splash automatically; current installs no longer create one,
+# but this still cleans one up if present.
 
 set -uo pipefail
 
@@ -43,11 +45,12 @@ elif [[ -f $HOOK_STAGED && -f $HOOK_DEST ]]; then
   rm -f -- "$HOOK_STAGED"
 fi
 
-# Move the hook aside rather than deleting it: a theme change mid-uninstall
-# must not retheme against a half-removed install, but a failed, cancelled,
-# or interrupted privileged transaction below must not silently leave the
-# theme installed with nothing keeping it current -- so the hook needs to
-# come back in that case.
+# A hook, if present, is a leftover from an earlier install (current installs
+# no longer create one). Move it aside rather than deleting it outright: a
+# theme change mid-uninstall must not retheme against a half-removed install,
+# but a failed, cancelled, or interrupted privileged transaction below must
+# not silently leave the theme installed with nothing keeping it current -- so
+# the hook needs to come back in that case.
 hook_staged=false
 if [[ -f $HOOK_DEST ]]; then
   mv -- "$HOOK_DEST" "$HOOK_STAGED" || {
@@ -79,7 +82,11 @@ on_signal() {
   if [[ $outcome == pending ]]; then
     outcome=interrupted
     restore_hook
-    echo "uninstall: interrupted; restored the hook. Parts of the theme may already be removed; re-run ./uninstall.sh to finish." >&2
+    if $hook_staged; then
+      echo "uninstall: interrupted; restored the hook. Parts of the theme may already be removed; re-run ./uninstall.sh to finish." >&2
+    else
+      echo "uninstall: interrupted. Parts of the theme may already be removed; re-run ./uninstall.sh to finish." >&2
+    fi
   fi
   case "$sig" in
     INT) exit 130 ;;
@@ -135,7 +142,7 @@ else
   trap - INT TERM HUP
   restore_hook
   echo "uninstall: did not complete -- authentication was cancelled or the privileged step failed." >&2
-  echo "uninstall: the hook has been put back. Parts of the theme may already be removed;" >&2
-  echo "uninstall: re-run ./uninstall.sh to finish." >&2
+  $hook_staged && echo "uninstall: the hook has been put back." >&2
+  echo "uninstall: parts of the theme may already be removed; re-run ./uninstall.sh to finish." >&2
   exit 1
 fi

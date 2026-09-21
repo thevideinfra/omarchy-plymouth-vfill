@@ -31,6 +31,8 @@ done
 
 home="$scratch/home"
 mkdir -p "$home"
+hook="$home/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh"
+
 HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" </dev/null >/dev/null 2>&1
 assert_equals "0" "$?" "install succeeds when the privileged step succeeds"
 
@@ -41,7 +43,19 @@ pass "the privileged step runs the installed retheme with --force"
 assert_equals "$home/.local/state/omarchy/current/theme" "${recorded[*]: -1}" \
   "the privileged step is given the user's theme directory"
 
-hook="$home/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh"
-grep -q 'RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme' "$hook" ||
-  fail "the hook points at the installed retheme script"
-pass "the hook points at the installed retheme script"
+[[ ! -e $hook ]] || fail "install creates no theme-set hook"
+pass "install creates no theme-set hook"
+
+# --- A theme-set hook left by an earlier install is removed. ---------------
+
+mkdir -p "$(dirname "$hook")"
+printf '#!/bin/bash\nexit 0\n' >"$hook"
+chmod +x "$hook"
+
+output=$(HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" </dev/null 2>&1)
+assert_equals "0" "$?" "install still succeeds when an earlier hook is present"
+[[ ! -e $hook ]] || fail "install removes a pre-existing theme-set hook"
+pass "install removes a pre-existing theme-set hook"
+[[ $output == *"removing the automatic theme-set hook"* ]] ||
+  fail "install says it removed the earlier hook" "$output"
+pass "install says it removed the earlier hook"

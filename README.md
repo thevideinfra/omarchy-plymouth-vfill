@@ -38,29 +38,22 @@ fighting over the splash. Removing it runs `omarchy plymouth reset`, which asks
 for your password itself and rebuilds the initramfs, so a migration prompts
 twice and rebuilds twice.
 
-## Theme following
+## Updating after a theme change
 
-A `theme-set` hook keeps the splash in step with `omarchy theme set`. It
-compares the active theme's background, foreground and logo against a marker
-baked into the installed theme:
-
-- Nothing relevant changed: exits silently, no prompt.
-- Something changed: authenticates once, recolours, rebuilds the initramfs
-  (roughly 90 seconds).
-
-The logo comes from the active theme's `unlock.png` when it ships one, and
-otherwise from Omarchy's `logo.svg` recoloured to the theme foreground. Not
-every theme ships `unlock.png` — `aurora`, `dracula` and `texas-longhorns` do
-not.
-
-To republish and rebuild by hand at any time:
+The splash does not change automatically. After `omarchy theme set`, or
+picking a theme another way, update it by hand:
 
 ```bash
 sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
 ```
 
-The marker is written only after the initramfs rebuild succeeds, so a failed or
-interrupted rebuild is retried on the next theme change.
+That asks for your password once and rebuilds the initramfs (roughly 90
+seconds).
+
+The logo comes from the active theme's `unlock.png` when it ships one, and
+otherwise from Omarchy's `logo.svg` recoloured to the theme foreground. Not
+every theme ships `unlock.png` — `aurora`, `dracula` and `texas-longhorns` do
+not.
 
 ## Uninstall
 
@@ -70,8 +63,8 @@ interrupted rebuild is retried on the next theme change.
 
 Restores Omarchy's stock splash.
 
-It removes the hook, `/usr/local/lib/omarchy-vfill/` and the `omarchy-vfill`
-theme, then rebuilds the initramfs.
+It removes `/usr/local/lib/omarchy-vfill/`, the `omarchy-vfill` theme, and any
+theme-set hook left by an earlier install, then rebuilds the initramfs.
 
 ## Requirements
 
@@ -99,8 +92,9 @@ Developed against Omarchy 4.0.4, Plymouth 26.134.222, on an AMD GPU with
   Plymouth; this project deliberately does not.
 - Omarchy's own Plymouth reset (`omarchy plymouth reset`, or the Unlock/logo
   menu that calls it) sets the default theme back to `omarchy`, turning vfill
-  off. The hook does not notice, because the marker still matches. Restore it
-  with `sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force`.
+  off. Nothing notices automatically. Restore it with the same command used
+  after any theme change:
+  `sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force`.
 
 ## Tests
 

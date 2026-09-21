@@ -1,18 +1,21 @@
 #!/bin/bash
 
 # Recolour the installed omarchy-vfill Plymouth theme from the active Omarchy
-# theme and rebuild the initramfs. Run as root; the theme-set hook elevates via
-# pkexec, and it is safe to run by hand.
+# theme and rebuild the initramfs. Run as root; safe to run by hand -- this is
+# the command the user runs after changing the Omarchy theme, since nothing
+# does it automatically:
+#
+#   sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
 #
 #   omarchy-vfill-retheme                     recolour if needed, then rebuild
 #   omarchy-vfill-retheme --check             exit 0 if a retheme is needed, 1 if not
 #   omarchy-vfill-retheme --force             republish and rebuild even if current
 #   omarchy-vfill-retheme --theme-dir <path>  use <path> instead of resolving one
 #
-# --check performs no writes and needs no privileges, so the hook can decide
-# whether to prompt at all. --force skips the marker comparison, so updated
-# theme files (after a git pull and re-install) are republished; it cannot be
-# combined with --check.
+# --check performs no writes and needs no privileges, so a caller can decide
+# whether to prompt at all before elevating. --force skips the marker
+# comparison, so updated theme files (after a git pull and re-install) are
+# republished; it cannot be combined with --check.
 
 set -uo pipefail
 

@@ -61,6 +61,15 @@ assert_equals "0" "$?" "uninstall succeeds when the privileged step succeeds"
 [[ ! -e $hook ]] || fail "a successful uninstall removes the hook"
 pass "a successful uninstall removes the hook"
 
+# --- Uninstall succeeds just as well when there is no hook at all -- the
+#     normal case now that install.sh no longer creates one. --------------
+
+rm -f -- "$argv" "$hook"
+output=$(HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/uninstall.sh" </dev/null 2>&1)
+assert_equals "0" "$?" "uninstall succeeds with no hook present"
+[[ ! -e $hook ]] || fail "uninstall with no hook still leaves no hook behind"
+pass "uninstall with no hook still leaves no hook behind"
+
 mapfile -d '' -t recorded <"$argv"
 assert_equals "/bin/bash -c" "${recorded[0]} ${recorded[1]}" \
   "the privileged step is a single root shell"

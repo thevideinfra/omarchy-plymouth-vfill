@@ -88,6 +88,14 @@ whether a retheme is actually needed, and only then elevates via `pkexec` to run
 
 ## Retheme logic
 
+> **2026-09-21:** The automatic `theme-set` hook described below was dropped
+> at the user's request. `install.sh` no longer renders or installs it, and a
+> leftover one from an earlier install is now removed by `install.sh` and
+> `uninstall.sh`. The splash is instead updated by hand with
+> `sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force`. The
+> rest of this section, and the `hooks/theme-set.sh` component above, describe
+> the original design and are left as historical record rather than rewritten.
+
 The installed theme directory carries a marker file recording the values baked
 into it:
 

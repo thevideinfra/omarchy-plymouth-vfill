@@ -206,15 +206,3 @@ vfill_open_user_file() {
 
   printf '%s\n' "$fd"
 }
-
-# Render the theme-set hook, pointing it at the installed root-owned retheme
-# script. Refuses a relative path: the hook runs from the user's session, where
-# the working directory is arbitrary.
-vfill_render_hook() {
-  local template="$1" retheme="$2"
-
-  [[ $retheme == /* ]] || return 1
-  [[ -f $template ]] || return 1
-
-  sed "s#__RETHEME_PATH__#$retheme#" "$template"
-}

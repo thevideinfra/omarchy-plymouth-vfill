@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Install the omarchy-vfill Plymouth theme and its theme-set hook.
+# Install the omarchy-vfill Plymouth theme.
 #
 # Everything root executes or sources is copied root-owned into
 # /usr/local/lib/omarchy-vfill/ in one privileged transaction; the checkout
@@ -10,6 +10,10 @@
 # Idempotent: re-running reinstalls from the current source and republishes the
 # theme with --force, so updated theme files take effect even when the colours
 # and logo have not changed.
+#
+# The splash does not follow theme changes automatically. After changing the
+# Omarchy theme, update it by hand with:
+#   sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
 
 set -uo pipefail
 
@@ -62,6 +66,15 @@ if [[ -d $LEGACY_DIR ]] || [[ -f $HOOK_DIR/reapply-hook.sh ]]; then
   fi
 fi
 
+# An earlier version of this project installed a theme-set hook that
+# recoloured the splash automatically. That hook is no longer rendered; drop
+# a leftover one so re-running install on an upgraded machine removes it.
+if [[ -f $HOOK_DEST ]]; then
+  echo "install: removing the automatic theme-set hook from an earlier install"
+  echo "  (recolouring is now manual; see the command printed at the end)"
+  rm -f -- "$HOOK_DEST"
+fi
+
 run_root() {
   if [[ -t 0 ]]; then
     sudo "$@"
@@ -90,13 +103,6 @@ run_root /bin/bash -c '
   exit 1
 }
 
-# Only after the transaction above has succeeded does the installed retheme
-# script exist for the hook to point at.
-install -d -m 0755 "$HOOK_DIR"
-vfill_render_hook "$REPO/hooks/theme-set.sh" "$PREFIX/bin/omarchy-vfill-retheme" >"$HOOK_DEST" || {
-  echo "install: failed to render the theme-set hook" >&2
-  exit 1
-}
-chmod +x "$HOOK_DEST"
-
 echo "install: done. Reboot to see the new boot splash."
+echo "install: after changing the Omarchy theme, update the splash by hand with:"
+echo "install:   sudo $PREFIX/bin/omarchy-vfill-retheme --force"
