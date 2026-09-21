@@ -52,3 +52,19 @@ pass "a missing marker never matches"
 vfill_marker_matches "$marker" "140F1F" "DFEDE5" "$scratch/absent-logo.png" &&
   fail "a missing logo file never matches"
 pass "a missing logo file never matches"
+
+# The optional fifth argument names the file whose bytes are hashed, so a
+# privileged caller can hash the copy it published rather than re-reading a
+# user-controlled path.
+published="$scratch/published-logo.png"
+printf 'published bytes\n' >"$published"
+vfill_write_marker "$marker" "140F1F" "DFEDE5" "$logo" "$published"
+assert_equals "$(sha256sum "$published" | cut -d' ' -f1)" \
+  "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$marker")" \
+  "the marker hashes the file named by the fifth argument"
+assert_equals "$logo" "$(sed -nE 's/^logo_source=(.*)$/\1/p' "$marker")" \
+  "the marker still records the logo path as its source"
+
+vfill_write_marker "$marker" "140F1F" "DFEDE5" "$logo" "$scratch/absent.png" &&
+  fail "a missing hash source refuses to write a marker"
+pass "a missing hash source refuses to write a marker"

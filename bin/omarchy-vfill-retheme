@@ -6,16 +6,22 @@
 #
 #   omarchy-vfill-retheme                     recolour if needed, then rebuild
 #   omarchy-vfill-retheme --check             exit 0 if a retheme is needed, 1 if not
+#   omarchy-vfill-retheme --force             republish and rebuild even if current
 #   omarchy-vfill-retheme --theme-dir <path>  use <path> instead of resolving one
 #
 # --check performs no writes and needs no privileges, so the hook can decide
-# whether to prompt at all.
+# whether to prompt at all. --force skips the marker comparison, so updated
+# theme files (after a git pull and re-install) are republished; it cannot be
+# combined with --check.
 
 set -uo pipefail
 
 REPO=$(cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
 THEME_DEST=${VFILL_THEME_DEST:-/usr/share/plymouth/themes/omarchy-vfill}
 OMARCHY_PATH=${OMARCHY_PATH:-/usr/share/omarchy}
+# Overridable only so the tests can point it at a scratch file, exactly like
+# VFILL_THEME_DEST; sudo's env_reset and pkexec both drop it on a real run.
+LOCK_FILE=${VFILL_LOCK_FILE:-/run/lock/omarchy-vfill.lock}
 
 source "$REPO/lib/vfill.sh"
 
@@ -37,15 +43,45 @@ vfill_invoking_home() {
 
 THEME_DIR_OPT=""
 CHECK_ONLY=false
+FORCE=false
 
 while (($# > 0)); do
   case "$1" in
     --check) CHECK_ONLY=true ;;
+    --force) FORCE=true ;;
     --theme-dir) shift; THEME_DIR_OPT="${1:-}" ;;
     *) echo "omarchy-vfill-retheme: unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
+
+if $CHECK_ONLY && $FORCE; then
+  echo "omarchy-vfill-retheme: --force cannot be combined with --check" >&2
+  exit 2
+fi
+
+if ! $CHECK_ONLY; then
+  if ((EUID != 0)); then
+    echo "omarchy-vfill-retheme: must run as root" >&2
+    exit 1
+  fi
+
+  # Serialise privileged runs. omarchy-theme-set releases its own lock before
+  # running hooks, so two quick theme changes can start two rethemes at once;
+  # unserialised they would interleave the directory swap below and run two
+  # initramfs builds into the same image. Blocking is fine: the later run then
+  # reads the theme as it is once the earlier one has finished, so the last
+  # theme set wins. /run/lock is root-owned 0755, so no user can pre-create
+  # or redirect this file; >> avoids truncating anything.
+  exec {lock_fd}>>"$LOCK_FILE" || {
+    echo "omarchy-vfill-retheme: cannot open lock $LOCK_FILE" >&2
+    exit 1
+  }
+  flock "$lock_fd" || {
+    echo "omarchy-vfill-retheme: cannot take lock $LOCK_FILE" >&2
+    exit 1
+  }
+fi
 
 if [[ -n $THEME_DIR_OPT ]]; then
   CURRENT_THEME="$THEME_DIR_OPT"
@@ -73,18 +109,13 @@ logo=$(vfill_resolve_logo "$CURRENT_THEME" "$OMARCHY_PATH") || {
   exit 1
 }
 
-if vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo"; then
+if ! $FORCE && vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo"; then
   $CHECK_ONLY && exit 1
   echo "omarchy-vfill-retheme: already current, nothing to do"
   exit 0
 fi
 
 $CHECK_ONLY && exit 0
-
-if ((EUID != 0)); then
-  echo "omarchy-vfill-retheme: must run as root" >&2
-  exit 1
-fi
 
 # Resolve the initramfs rebuild command before writing anything: a system
 # that cannot rebuild its initramfs must not end up with a half-published
@@ -151,13 +182,28 @@ if [[ -n $logo_fd ]]; then
   }
   exec {logo_fd}<&-
   logo_fd=""
+
+  # Hash the bytes just copied from the verified descriptor, never the path:
+  # root re-reading the path could hash a file swapped in since the check and
+  # put a root-only file's digest into the world-readable marker. Unchanged
+  # artwork gives the same digest as --check's hash of the path, so the theme
+  # still reads as current afterwards.
+  vfill_write_marker "$staging/.vfill-marker" "$background" "$foreground" "$logo" "$staging/logo.png" || {
+    echo "omarchy-vfill-retheme: failed to write the marker" >&2
+    exit 1
+  }
 fi
 
 # Publish atomically: build the new theme directory next to the live one,
 # verify every file lands, then swap it into place with a rename. A failure
-# before the swap leaves the previous theme untouched -- so a partial write
-# can never leave a broken splash installed under a marker that claims it is
-# current.
+# before the swap leaves the previous theme untouched.
+#
+# The marker is deliberately NOT part of the published set. It claims the
+# theme is live in the initramfs, which is only true once
+# plymouth-set-default-theme and the rebuild have both succeeded, so it is
+# installed last. Until then no marker exists at all -- not even the previous
+# one -- so any failure or kill in between leaves the next --check asking for
+# a retheme instead of reporting "already current" forever.
 new_dest="$THEME_DEST.new.$$"
 rm -rf -- "$new_dest"
 install -d -m 0755 -o root -g root "$new_dest" || {
@@ -165,25 +211,30 @@ install -d -m 0755 -o root -g root "$new_dest" || {
   exit 1
 }
 
-for file in "$staging"/* "$staging"/.vfill-marker; do
+for file in "$staging"/*; do
   install -m 0644 -o root -g root "$file" "$new_dest/$(basename "$file")" || {
     echo "omarchy-vfill-retheme: failed to publish $(basename "$file")" >&2
     exit 1
   }
 done
 
+rm -f -- "$THEME_DEST/.vfill-marker" || {
+  echo "omarchy-vfill-retheme: failed to remove the previous marker" >&2
+  exit 1
+}
+
 old_dest=""
 if [[ -d $THEME_DEST ]]; then
   old_dest="$THEME_DEST.old.$$"
-  mv -- "$THEME_DEST" "$old_dest" || {
+  mv -T -- "$THEME_DEST" "$old_dest" || {
     echo "omarchy-vfill-retheme: failed to move the previous theme aside" >&2
     exit 1
   }
 fi
 
-if ! mv -- "$new_dest" "$THEME_DEST"; then
+if ! mv -T -- "$new_dest" "$THEME_DEST"; then
   echo "omarchy-vfill-retheme: failed to swap in the new theme" >&2
-  [[ -n $old_dest ]] && mv -- "$old_dest" "$THEME_DEST"
+  [[ -n $old_dest ]] && mv -T -- "$old_dest" "$THEME_DEST"
   exit 1
 fi
 new_dest=""
@@ -197,5 +248,12 @@ plymouth-set-default-theme omarchy-vfill || {
 echo "omarchy-vfill-retheme: rebuilding initramfs with $rebuild"
 $rebuild || {
   echo "omarchy-vfill-retheme: initramfs rebuild failed" >&2
+  exit 1
+}
+
+# Only now is the recoloured theme actually what boots, so only now may the
+# marker say so.
+install -m 0644 -o root -g root "$staging/.vfill-marker" "$THEME_DEST/.vfill-marker" || {
+  echo "omarchy-vfill-retheme: rebuilt, but failed to write the marker; the next theme change will retheme again" >&2
   exit 1
 }

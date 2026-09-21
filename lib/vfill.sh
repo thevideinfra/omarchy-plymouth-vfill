@@ -53,14 +53,24 @@ vfill_resolve_logo() {
 # The marker records what is currently baked into the installed theme, so a
 # theme change that alters nothing we care about costs no rebuild and no
 # authentication prompt.
+#
+# The optional fifth argument is the file whose bytes are hashed, when that is
+# not the logo path itself. A privileged caller passes the copy it published
+# from a verified descriptor, so root never hashes a user-controlled path (a
+# racing swap could otherwise put the hash of a root-only file into this 0644
+# file). For an unlock.png the published copy is byte-identical to the source,
+# so --check, which hashes the source path, still sees a match.
 vfill_write_marker() {
-  local marker="$1" background="$2" foreground="$3" logo="$4"
+  local marker="$1" background="$2" foreground="$3" logo="$4" hash_from="${5:-$4}"
+  local hash
+
+  hash=$(vfill_logo_hash "$hash_from") || return 1
 
   cat >"$marker" <<EOF
 background=$background
 foreground=$foreground
 logo_source=$logo
-logo_sha256=$(vfill_logo_hash "$logo")
+logo_sha256=$hash
 EOF
 }
 
@@ -170,12 +180,13 @@ vfill_stage_theme() {
 vfill_open_user_file() {
   local path="$1" uid="$2" fd owner
 
-  # A bare `exec redirection` (no command word) applies its redirections to
-  # the current shell for good, not just for this statement -- so a plain
-  # `exec {fd}<"$path" 2>/dev/null` would permanently silence this shell's
-  # stderr the first time $path does not exist. Grouping scopes the
-  # 2>/dev/null to just this open attempt; the fd it allocates still persists
-  # in the calling shell afterward, same as a bare exec would.
+  # A bare `exec redirection` (no command word) applies all its redirections
+  # to the current shell for good, not just for this statement -- so a plain
+  # `exec {fd}<"$path" 2>/dev/null` would, whenever the open SUCCEEDS, leave
+  # this shell's stderr permanently pointed at /dev/null. (When the open
+  # fails, bash reports the error and applies neither redirection.) Grouping
+  # scopes the 2>/dev/null to just this open attempt; the fd it allocates
+  # still persists in the calling shell afterward, same as a bare exec would.
   { exec {fd}<"$path"; } 2>/dev/null || return 1
 
   if [[ ! -f /proc/self/fd/$fd ]]; then
