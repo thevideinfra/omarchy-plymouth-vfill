@@ -7,7 +7,9 @@
 # under $HOME is only ever the installation source, never something root runs
 # or sources directly. See ruling-6-root-owned-install.md.
 #
-# Idempotent: re-running reinstalls from the current source and recolours.
+# Idempotent: re-running reinstalls from the current source and republishes the
+# theme with --force, so updated theme files take effect even when the colours
+# and logo have not changed.
 
 set -uo pipefail
 
@@ -82,7 +84,7 @@ run_root /bin/bash -c '
   install -m 0644 -o root -g root \
     "$repo/theme/omarchy-vfill.plymouth" "$repo/theme/omarchy-vfill.script" "$prefix/theme/"
 
-  exec "$prefix/bin/omarchy-vfill-retheme" --theme-dir "$theme_dir"
+  exec "$prefix/bin/omarchy-vfill-retheme" --force --theme-dir "$theme_dir"
 ' bash "$PREFIX" "$REPO" "$THEME_DIR" || {
   echo "install: privileged install/retheme step failed; nothing else was changed" >&2
   exit 1
