@@ -72,3 +72,21 @@ pass "the fallback logo is rendered to logo.png"
 
 assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
   "the fallback logo is recoloured to the foreground"
+
+# An explicit fifth-argument logo must win over the theme directory's own
+# unlock.png, not just supply a value when the directory has none. This is
+# what closes the TOCTOU window in bin/omarchy-vfill-retheme: the caller
+# resolves (and, for unlock.png, verifies) the logo exactly once and passes
+# it through, so vfill_stage_theme must never re-resolve and re-discover a
+# file that could have changed since.
+magick -size 40x10 xc:white -alpha set "$theme_dir/unlock.png"
+assert_equals "FFFFFF" "$(pixel_hex "$theme_dir/unlock.png")" \
+  "prerequisite: the theme directory's own unlock.png is white"
+
+rm -rf "${dest:?}"/*
+vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" "$omarchy_path/logo.svg" ||
+  fail "staging succeeds when an explicit fifth-argument logo is given"
+pass "staging succeeds when an explicit fifth-argument logo is given"
+
+assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
+  "the fifth-argument logo (the svg fallback) wins over the theme's own unlock.png"

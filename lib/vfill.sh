@@ -112,13 +112,24 @@ vfill_initramfs_command() {
 # Build a complete, recoloured theme in dest_dir. Kept free of root operations
 # so the tests can stage into a scratch directory; callers that need to publish
 # into /usr/share do the privileged copy themselves.
+#
+# The optional fifth argument is an already-resolved logo path. Pass it when
+# the caller has already resolved (and, for a privileged caller, verified) the
+# logo once: resolving it again here would create a TOCTOU window, since a
+# racing process could swap in an unlock.png between the caller's resolution
+# and this function's own lookup. When omitted, this resolves the logo itself,
+# exactly as before.
 vfill_stage_theme() {
-  local repo="$1" dest="$2" theme_dir="$3" omarchy_path="$4"
+  local repo="$1" dest="$2" theme_dir="$3" omarchy_path="$4" logo_override="${5:-}"
   local background foreground logo floats
 
   background=$(vfill_read_color "$theme_dir/colors.toml" background) || return 1
   foreground=$(vfill_read_color "$theme_dir/colors.toml" foreground) || return 1
-  logo=$(vfill_resolve_logo "$theme_dir" "$omarchy_path") || return 1
+  if [[ -n $logo_override ]]; then
+    logo="$logo_override"
+  else
+    logo=$(vfill_resolve_logo "$theme_dir" "$omarchy_path") || return 1
+  fi
   floats=$(vfill_hex_to_floats "$background") || return 1
 
   mkdir -p "$dest" || return 1

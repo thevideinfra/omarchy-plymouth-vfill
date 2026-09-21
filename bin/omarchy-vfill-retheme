@@ -132,7 +132,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" || {
+# Pass the already-resolved $logo through rather than letting
+# vfill_stage_theme resolve it again: a second lookup would leave a TOCTOU
+# window between this script's resolution (and, for unlock.png, its
+# ownership check above) and the copy staging performs.
+vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" "$logo" || {
   echo "omarchy-vfill-retheme: staging failed" >&2
   exit 1
 }
