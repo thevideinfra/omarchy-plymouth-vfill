@@ -86,24 +86,112 @@ if ((EUID != 0)); then
   exit 1
 fi
 
+# Resolve the initramfs rebuild command before writing anything: a system
+# that cannot rebuild its initramfs must not end up with a half-published
+# theme it can never boot with.
+rebuild=$(vfill_initramfs_command) || {
+  echo "omarchy-vfill-retheme: no initramfs tool found; nothing published" >&2
+  exit 1
+}
+
+if [[ -n ${PKEXEC_UID:-} ]]; then
+  invoking_uid=$PKEXEC_UID
+elif [[ -n ${SUDO_UID:-} ]]; then
+  invoking_uid=$SUDO_UID
+else
+  invoking_uid=$(id -u)
+fi
+
+# The theme-provided unlock.png is user-controlled content that
+# omarchy-theme-set copies with cp -r, which preserves symlinks. Open it as
+# the invoking user's file before staging and require the OPENED inode -- not
+# the path -- to be a regular file that user owns, so a symlink to a
+# root-owned file (e.g. /etc/shadow) is refused rather than published
+# world-readable into the initramfs. The trusted $OMARCHY_PATH/logo.svg
+# fallback is package-owned system content and is exempt.
+logo_fd=""
+if [[ $logo != "$OMARCHY_PATH/logo.svg" ]]; then
+  logo_fd_capture=$(mktemp)
+  if vfill_open_user_file "$logo" "$invoking_uid" >"$logo_fd_capture"; then
+    logo_fd=$(<"$logo_fd_capture")
+  else
+    rm -f "$logo_fd_capture"
+    echo "omarchy-vfill-retheme: refusing to publish $logo: not a regular file owned by uid $invoking_uid" >&2
+    exit 1
+  fi
+  rm -f "$logo_fd_capture"
+fi
+
 staging=$(mktemp -d)
-trap 'rm -rf -- "$staging"' EXIT
+new_dest=""
+
+cleanup() {
+  [[ -n $logo_fd ]] && exec {logo_fd}<&- 2>/dev/null
+  rm -rf -- "$staging"
+  [[ -n $new_dest ]] && rm -rf -- "$new_dest"
+}
+trap cleanup EXIT
 
 vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" || {
   echo "omarchy-vfill-retheme: staging failed" >&2
   exit 1
 }
 
-install -d -m 0755 -o root -g root "$THEME_DEST"
-for file in "$staging"/* "$staging"/.vfill-marker; do
-  install -m 0644 -o root -g root "$file" "$THEME_DEST/$(basename "$file")"
-done
+# Overwrite the staged logo with exactly the bytes read from the verified
+# descriptor, so the bytes published are the ones that were checked, not a
+# fresh read of the path that could have been swapped after the check.
+if [[ -n $logo_fd ]]; then
+  cat <&"$logo_fd" >"$staging/logo.png" || {
+    echo "omarchy-vfill-retheme: failed to read the verified logo" >&2
+    exit 1
+  }
+  exec {logo_fd}<&-
+  logo_fd=""
+fi
 
-plymouth-set-default-theme omarchy-vfill
-
-rebuild=$(vfill_initramfs_command) || {
-  echo "omarchy-vfill-retheme: no initramfs tool found" >&2
+# Publish atomically: build the new theme directory next to the live one,
+# verify every file lands, then swap it into place with a rename. A failure
+# before the swap leaves the previous theme untouched -- so a partial write
+# can never leave a broken splash installed under a marker that claims it is
+# current.
+new_dest="$THEME_DEST.new.$$"
+rm -rf -- "$new_dest"
+install -d -m 0755 -o root -g root "$new_dest" || {
+  echo "omarchy-vfill-retheme: failed to create $new_dest" >&2
   exit 1
 }
+
+for file in "$staging"/* "$staging"/.vfill-marker; do
+  install -m 0644 -o root -g root "$file" "$new_dest/$(basename "$file")" || {
+    echo "omarchy-vfill-retheme: failed to publish $(basename "$file")" >&2
+    exit 1
+  }
+done
+
+old_dest=""
+if [[ -d $THEME_DEST ]]; then
+  old_dest="$THEME_DEST.old.$$"
+  mv -- "$THEME_DEST" "$old_dest" || {
+    echo "omarchy-vfill-retheme: failed to move the previous theme aside" >&2
+    exit 1
+  }
+fi
+
+if ! mv -- "$new_dest" "$THEME_DEST"; then
+  echo "omarchy-vfill-retheme: failed to swap in the new theme" >&2
+  [[ -n $old_dest ]] && mv -- "$old_dest" "$THEME_DEST"
+  exit 1
+fi
+new_dest=""
+[[ -n $old_dest ]] && rm -rf -- "$old_dest"
+
+plymouth-set-default-theme omarchy-vfill || {
+  echo "omarchy-vfill-retheme: plymouth-set-default-theme failed" >&2
+  exit 1
+}
+
 echo "omarchy-vfill-retheme: rebuilding initramfs with $rebuild"
-$rebuild
+$rebuild || {
+  echo "omarchy-vfill-retheme: initramfs rebuild failed" >&2
+  exit 1
+}

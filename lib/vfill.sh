@@ -150,3 +150,37 @@ vfill_stage_theme() {
 
   vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" || return 1
 }
+
+# Open a file for reading and confirm the inode actually opened is a regular file
+# owned by the expected user. Checks the descriptor, not the path, so a symlink or
+# a file swapped after the path was inspected cannot redirect the read to
+# something the user does not own. On success prints the descriptor number, which
+# stays open in the calling shell; the caller reads from it and closes it.
+vfill_open_user_file() {
+  local path="$1" uid="$2" fd owner
+
+  # A bare `exec redirection` (no command word) applies its redirections to
+  # the current shell for good, not just for this statement -- so a plain
+  # `exec {fd}<"$path" 2>/dev/null` would permanently silence this shell's
+  # stderr the first time $path does not exist. Grouping scopes the
+  # 2>/dev/null to just this open attempt; the fd it allocates still persists
+  # in the calling shell afterward, same as a bare exec would.
+  { exec {fd}<"$path"; } 2>/dev/null || return 1
+
+  if [[ ! -f /proc/self/fd/$fd ]]; then
+    exec {fd}<&-
+    return 1
+  fi
+
+  owner=$(stat -L -c %u "/proc/self/fd/$fd" 2>/dev/null) || {
+    exec {fd}<&-
+    return 1
+  }
+
+  if [[ $owner != "$uid" ]]; then
+    exec {fd}<&-
+    return 1
+  fi
+
+  printf '%s\n' "$fd"
+}
