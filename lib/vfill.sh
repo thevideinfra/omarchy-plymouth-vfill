@@ -108,3 +108,45 @@ vfill_initramfs_command() {
     return 1
   fi
 }
+
+# Build a complete, recoloured theme in dest_dir. Kept free of root operations
+# so the tests can stage into a scratch directory; callers that need to publish
+# into /usr/share do the privileged copy themselves.
+vfill_stage_theme() {
+  local repo="$1" dest="$2" theme_dir="$3" omarchy_path="$4"
+  local background foreground logo floats
+
+  background=$(vfill_read_color "$theme_dir/colors.toml" background) || return 1
+  foreground=$(vfill_read_color "$theme_dir/colors.toml" foreground) || return 1
+  logo=$(vfill_resolve_logo "$theme_dir" "$omarchy_path") || return 1
+  floats=$(vfill_hex_to_floats "$background") || return 1
+
+  mkdir -p "$dest" || return 1
+
+  install -m 0644 "$repo/theme/omarchy-vfill.plymouth" "$dest/omarchy-vfill.plymouth" || return 1
+  install -m 0644 "$repo/theme/omarchy-vfill.script" "$dest/omarchy-vfill.script" || return 1
+
+  sed -i \
+    -e "s/^Window.SetBackgroundTopColor.*/Window.SetBackgroundTopColor($floats);/" \
+    -e "s/^Window.SetBackgroundBottomColor.*/Window.SetBackgroundBottomColor($floats);/" \
+    "$dest/omarchy-vfill.script" || return 1
+
+  # The prompt furniture is recoloured to the theme foreground, exactly as
+  # omarchy-plymouth-set does for Omarchy's own theme.
+  local asset
+  for asset in entry.png lock.png bullet.png; do
+    install -m 0644 "$omarchy_path/default/plymouth/$asset" "$dest/$asset" || return 1
+    magick "$dest/$asset" -channel RGB +level-colors "#$foreground","#$foreground" "$dest/$asset" || return 1
+  done
+
+  # A theme's own unlock.png is already coloured and is used as-is. The
+  # greyscale logo.svg fallback is rendered and flattened to the foreground.
+  if [[ $logo == *.svg ]]; then
+    magick -background none "$logo" "$dest/logo.png" || return 1
+    magick "$dest/logo.png" -channel RGB +level-colors "#$foreground","#$foreground" "$dest/logo.png" || return 1
+  else
+    install -m 0644 "$logo" "$dest/logo.png" || return 1
+  fi
+
+  vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" || return 1
+}
