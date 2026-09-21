@@ -1,0 +1,21 @@
+#!/bin/bash
+
+set -uo pipefail
+
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+failed=0
+
+for test_file in "$root"/test/*-test.sh; do
+  [[ $(basename "$test_file") == "base-test.sh" ]] && continue
+  printf '# %s\n' "$(basename "$test_file")"
+  if ! bash "$test_file"; then
+    failed=$((failed + 1))
+  fi
+done
+
+if ((failed > 0)); then
+  printf '\n%d test file(s) failed\n' "$failed" >&2
+  exit 1
+fi
+
+printf '\nall test files passed\n'
