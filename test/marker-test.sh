@@ -48,3 +48,7 @@ pass "an edited logo with an unchanged path does not match"
 vfill_marker_matches "$scratch/absent-marker" "140F1F" "DFEDE5" "$logo" &&
   fail "a missing marker never matches"
 pass "a missing marker never matches"
+
+vfill_marker_matches "$marker" "140F1F" "DFEDE5" "$scratch/absent-logo.png" &&
+  fail "a missing logo file never matches"
+pass "a missing logo file never matches"
