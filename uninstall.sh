@@ -13,6 +13,9 @@ fi
 REPO=$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)
 THEME_DEST=/usr/share/plymouth/themes/omarchy-vfill
 PREFIX=/usr/local/lib/omarchy-vfill
+# The same lock bin/omarchy-vfill-retheme takes, so an uninstall never
+# interleaves with a retheme still publishing or rebuilding.
+LOCK_FILE=/run/lock/omarchy-vfill.lock
 HOOK_DIR="$HOME/.config/omarchy/hooks/theme-set.d"
 HOOK_DEST="$HOOK_DIR/omarchy-vfill.sh"
 # omarchy-hook (/usr/share/omarchy/bin/omarchy-hook) runs every regular file
@@ -76,7 +79,7 @@ on_signal() {
   if [[ $outcome == pending ]]; then
     outcome=interrupted
     restore_hook
-    echo "uninstall: interrupted; restored the hook. The theme is still installed." >&2
+    echo "uninstall: interrupted; restored the hook. Parts of the theme may already be removed; re-run ./uninstall.sh to finish." >&2
   fi
   case "$sig" in
     INT) exit 130 ;;
@@ -108,16 +111,21 @@ run_root() {
 }
 
 # Restore the default theme before deleting the theme directory, so there is
-# never a moment where the configured default does not exist.
+# never a moment where the configured default does not exist. The .new.* and
+# .old.* siblings are what an interrupted retheme can strand beside it.
 if run_root /bin/bash -c '
   set -uo pipefail
-  theme_dest="$1" prefix="$2"
-  shift 2
+  shopt -s nullglob
+  theme_dest="$1" prefix="$2" lock_file="$3"
+  shift 3
+
+  exec {lock_fd}>>"$lock_file" || exit 1
+  flock "$lock_fd" || exit 1
 
   plymouth-set-default-theme omarchy || exit 1
-  rm -rf -- "$theme_dest" "$prefix"
+  rm -rf -- "$theme_dest" "$theme_dest".new.* "$theme_dest".old.* "$prefix" || exit 1
   "$@"
-' bash "$THEME_DEST" "$PREFIX" "${rebuild_cmd[@]}"; then
+' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "${rebuild_cmd[@]}"; then
   outcome=succeeded
   trap - INT TERM HUP
   $hook_staged && rm -f -- "$HOOK_STAGED"
@@ -127,6 +135,7 @@ else
   trap - INT TERM HUP
   restore_hook
   echo "uninstall: did not complete -- authentication was cancelled or the privileged step failed." >&2
-  echo "uninstall: the theme is still installed and the hook is still in place." >&2
+  echo "uninstall: the hook has been put back. Parts of the theme may already be removed;" >&2
+  echo "uninstall: re-run ./uninstall.sh to finish." >&2
   exit 1
 fi
