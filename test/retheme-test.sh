@@ -33,7 +33,7 @@ assert_equals "0" "$?" "--check exits 0 when the destination has no marker"
 # --check exits 1 (not needed) when the destination holds a matching marker.
 dest2="$scratch/dest-matching-marker"
 mkdir -p "$dest2"
-vfill_write_marker "$dest2/.vfill-marker" "140F1F" "DFEDE5" "$logo"
+vfill_write_marker "$dest2/.vfill-marker" "140F1F" "DFEDE5" "$logo" "DFEDE5"
 VFILL_THEME_DEST="$dest2" "$RETHEME" --check --theme-dir "$theme_dir"
 assert_equals "1" "$?" "--check exits 1 when the destination has a matching marker"
 

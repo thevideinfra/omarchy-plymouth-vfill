@@ -11,6 +11,7 @@ trap 'rm -rf -- "$scratch"' EXIT
 cat >"$scratch/colors.toml" <<'EOF'
 mode = "dark"
 
+bright_accent = "#ff79c6"
 accent = "#8be9fd"
 
 dark_background = "#21222c"
@@ -29,6 +30,28 @@ assert_equals "DFEDE5" "$(vfill_read_color "$scratch/colors.toml" foreground)" \
 # dark_background and lighter_background must not satisfy a background lookup.
 assert_equals "140F1F" "$(vfill_read_color "$scratch/colors.toml" background)" \
   "prefixed keys do not shadow background"
+
+assert_equals "8be9fd" "$(vfill_read_color "$scratch/colors.toml" accent)" \
+  "accent is read from colors.toml"
+
+# bright_accent must not satisfy a lookup for accent.
+assert_equals "8be9fd" "$(vfill_read_color "$scratch/colors.toml" accent)" \
+  "prefixed keys do not shadow accent"
+
+assert_equals "8be9fd" "$(vfill_logo_color "$scratch/colors.toml")" \
+  "vfill_logo_color prefers accent when present"
+
+cat >"$scratch/no-accent.toml" <<'EOF'
+background = "#140F1F"
+foreground = "#DFEDE5"
+EOF
+
+assert_equals "DFEDE5" "$(vfill_logo_color "$scratch/no-accent.toml")" \
+  "vfill_logo_color falls back to foreground when accent is absent"
+
+vfill_logo_color "$scratch/absent.toml" >/dev/null 2>&1 &&
+  fail "vfill_logo_color fails when the file is missing"
+pass "vfill_logo_color fails when the file is missing"
 
 vfill_read_color "$scratch/colors.toml" nonexistent >/dev/null 2>&1 &&
   fail "a missing key returns non-zero"

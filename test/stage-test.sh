@@ -55,7 +55,7 @@ assert_equals "Window.SetBackgroundBottomColor(0.078, 0.059, 0.122);" \
   "$(grep -m1 '^Window.SetBackgroundBottomColor' "$dest/omarchy-vfill.script")" \
   "the bottom background matches the top"
 
-vfill_marker_matches "$dest/.vfill-marker" "140F1F" "DFEDE5" "$theme_dir/unlock.png" ||
+vfill_marker_matches "$dest/.vfill-marker" "140F1F" "DFEDE5" "$theme_dir/unlock.png" "DFEDE5" ||
   fail "the staged marker reflects what was baked in"
 pass "the staged marker reflects what was baked in"
 
@@ -72,6 +72,23 @@ pass "the fallback logo is rendered to logo.png"
 
 assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
   "the fallback logo is recoloured to the foreground"
+
+# When the theme's colors.toml has an accent, the fallback logo is recoloured
+# to it instead of the foreground. Restore the file afterwards so the rest of
+# this test still exercises the no-accent (foreground) path.
+cp "$theme_dir/colors.toml" "$theme_dir/colors.toml.bak"
+cat >>"$theme_dir/colors.toml" <<'EOF'
+accent = "#8BE9FD"
+EOF
+rm -rf "${dest:?}"/*
+vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" ||
+  fail "staging succeeds for a theme with an accent"
+pass "staging succeeds for a theme with an accent"
+
+assert_equals "8BE9FD" "$(pixel_hex "$dest/logo.png")" \
+  "the fallback logo is recoloured to the accent when the theme has one"
+
+mv "$theme_dir/colors.toml.bak" "$theme_dir/colors.toml"
 
 # An explicit fifth-argument logo must win over the theme directory's own
 # unlock.png, not just supply a value when the directory has none. This is

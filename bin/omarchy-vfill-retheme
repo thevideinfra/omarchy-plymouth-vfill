@@ -107,12 +107,16 @@ foreground=$(vfill_read_color "$CURRENT_THEME/colors.toml" foreground) || {
   echo "omarchy-vfill-retheme: no foreground in $CURRENT_THEME/colors.toml" >&2
   exit 1
 }
+logo_color=$(vfill_logo_color "$CURRENT_THEME/colors.toml") || {
+  echo "omarchy-vfill-retheme: no accent or foreground in $CURRENT_THEME/colors.toml" >&2
+  exit 1
+}
 logo=$(vfill_resolve_logo "$CURRENT_THEME" "$OMARCHY_PATH") || {
   echo "omarchy-vfill-retheme: no logo available" >&2
   exit 1
 }
 
-if ! $FORCE && vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo"; then
+if ! $FORCE && vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color"; then
   $CHECK_ONLY && exit 1
   echo "omarchy-vfill-retheme: already current, nothing to do"
   exit 0
@@ -191,7 +195,7 @@ if [[ -n $logo_fd ]]; then
   # put a root-only file's digest into the world-readable marker. Unchanged
   # artwork gives the same digest as --check's hash of the path, so the theme
   # still reads as current afterwards.
-  vfill_write_marker "$staging/.vfill-marker" "$background" "$foreground" "$logo" "$staging/logo.png" || {
+  vfill_write_marker "$staging/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" "$staging/logo.png" || {
     echo "omarchy-vfill-retheme: failed to write the marker" >&2
     exit 1
   }

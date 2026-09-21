@@ -18,6 +18,17 @@ vfill_read_color() {
   printf '%s\n' "$value"
 }
 
+# The fallback logo.svg (Omarchy's own, used when a theme ships no unlock.png)
+# is recoloured to the theme's accent, so it stands out rather than blending
+# into the foreground-tinted prompt furniture; a theme with no accent falls
+# back to foreground. A theme's own unlock.png is already coloured and is
+# never touched by this.
+vfill_logo_color() {
+  local toml="$1"
+
+  vfill_read_color "$toml" accent || vfill_read_color "$toml" foreground
+}
+
 # Plymouth's Window.SetBackground*Color takes three floats in 0..1, not hex.
 vfill_hex_to_floats() {
   local hex="${1#\#}" r g b
@@ -54,14 +65,14 @@ vfill_resolve_logo() {
 # theme change that alters nothing we care about costs no rebuild and no
 # authentication prompt.
 #
-# The optional fifth argument is the file whose bytes are hashed, when that is
+# The optional sixth argument is the file whose bytes are hashed, when that is
 # not the logo path itself. A privileged caller passes the copy it published
 # from a verified descriptor, so root never hashes a user-controlled path (a
 # racing swap could otherwise put the hash of a root-only file into this 0644
 # file). For an unlock.png the published copy is byte-identical to the source,
 # so --check, which hashes the source path, still sees a match.
 vfill_write_marker() {
-  local marker="$1" background="$2" foreground="$3" logo="$4" hash_from="${5:-$4}"
+  local marker="$1" background="$2" foreground="$3" logo="$4" logo_color="$5" hash_from="${6:-$4}"
   local hash
 
   hash=$(vfill_logo_hash "$hash_from") || return 1
@@ -70,6 +81,7 @@ vfill_write_marker() {
 background=$background
 foreground=$foreground
 logo_source=$logo
+logo_color=$logo_color
 logo_sha256=$hash
 EOF
 }
@@ -84,21 +96,23 @@ vfill_logo_hash() {
 # Hash the logo as well as its path: re-theming can leave the path identical
 # while replacing the artwork underneath it.
 vfill_marker_matches() {
-  local marker="$1" background="$2" foreground="$3" logo="$4"
+  local marker="$1" background="$2" foreground="$3" logo="$4" logo_color="$5"
   local want_hash
 
   [[ -f $marker ]] || return 1
   want_hash=$(vfill_logo_hash "$logo") || return 1
 
-  local have_background have_foreground have_logo have_hash
+  local have_background have_foreground have_logo have_logo_color have_hash
   have_background=$(sed -nE 's/^background=(.*)$/\1/p' "$marker")
   have_foreground=$(sed -nE 's/^foreground=(.*)$/\1/p' "$marker")
   have_logo=$(sed -nE 's/^logo_source=(.*)$/\1/p' "$marker")
+  have_logo_color=$(sed -nE 's/^logo_color=(.*)$/\1/p' "$marker")
   have_hash=$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$marker")
 
   [[ $have_background == "$background" ]] || return 1
   [[ $have_foreground == "$foreground" ]] || return 1
   [[ $have_logo == "$logo" ]] || return 1
+  [[ $have_logo_color == "$logo_color" ]] || return 1
   [[ $have_hash == "$want_hash" ]] || return 1
 
   return 0
@@ -131,10 +145,11 @@ vfill_initramfs_command() {
 # exactly as before.
 vfill_stage_theme() {
   local repo="$1" dest="$2" theme_dir="$3" omarchy_path="$4" logo_override="${5:-}"
-  local background foreground logo floats
+  local background foreground logo_color logo floats
 
   background=$(vfill_read_color "$theme_dir/colors.toml" background) || return 1
   foreground=$(vfill_read_color "$theme_dir/colors.toml" foreground) || return 1
+  logo_color=$(vfill_logo_color "$theme_dir/colors.toml") || return 1
   if [[ -n $logo_override ]]; then
     logo="$logo_override"
   else
@@ -161,15 +176,16 @@ vfill_stage_theme() {
   done
 
   # A theme's own unlock.png is already coloured and is used as-is. The
-  # greyscale logo.svg fallback is rendered and flattened to the foreground.
+  # greyscale logo.svg fallback is rendered and flattened to the theme's
+  # accent colour, or the foreground when the theme has no accent.
   if [[ $logo == *.svg ]]; then
     magick -background none "$logo" "$dest/logo.png" || return 1
-    magick "$dest/logo.png" -channel RGB +level-colors "#$foreground","#$foreground" "$dest/logo.png" || return 1
+    magick "$dest/logo.png" -channel RGB +level-colors "#$logo_color","#$logo_color" "$dest/logo.png" || return 1
   else
     install -m 0644 "$logo" "$dest/logo.png" || return 1
   fi
 
-  vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" || return 1
+  vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" || return 1
 }
 
 # Open a file for reading and confirm the inode actually opened is a regular file

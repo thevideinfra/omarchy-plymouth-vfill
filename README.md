@@ -51,9 +51,9 @@ That asks for your password once and rebuilds the initramfs (roughly 90
 seconds).
 
 The logo comes from the active theme's `unlock.png` when it ships one, and
-otherwise from Omarchy's `logo.svg` recoloured to the theme foreground. Not
-every theme ships `unlock.png` — `aurora`, `dracula` and `texas-longhorns` do
-not.
+otherwise from Omarchy's `logo.svg` recoloured to the theme accent (the
+foreground, if the theme has no accent). Not every theme ships `unlock.png` —
+`aurora`, `dracula` and `texas-longhorns` do not.
 
 ## Uninstall
 
