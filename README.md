@@ -29,11 +29,14 @@ Reboot to see it.
 The installer asks for your password once, copies its scripts root-owned into
 `/usr/local/lib/omarchy-vfill/`, installs the theme as `omarchy-vfill`, and
 rebuilds the initramfs. The checkout is only the installation source; the
-root-run code never runs from it.
+root-run code never runs from it. Re-running it after a `git pull` republishes
+the updated theme files.
 
 The installer detects an earlier hook-patch installation of the same idea and
 offers to remove it first; leaving both in place would mean two mechanisms
-fighting over the splash.
+fighting over the splash. Removing it runs `omarchy plymouth reset`, which asks
+for your password itself and rebuilds the initramfs, so a migration prompts
+twice and rebuilds twice.
 
 ## Theme following
 
@@ -50,11 +53,14 @@ otherwise from Omarchy's `logo.svg` recoloured to the theme foreground. Not
 every theme ships `unlock.png` — `aurora`, `dracula` and `texas-longhorns` do
 not.
 
-To recolour by hand at any time:
+To republish and rebuild by hand at any time:
 
 ```bash
-sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
+sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
 ```
+
+The marker is written only after the initramfs rebuild succeeds, so a failed or
+interrupted rebuild is retried on the next theme change.
 
 ## Uninstall
 
@@ -91,6 +97,10 @@ Developed against Omarchy 4.0.4, Plymouth 26.134.222, on an AMD GPU with
   fill.
 - The SDDM greeter is not retinted. `omarchy-plymouth-set` retints it alongside
   Plymouth; this project deliberately does not.
+- Omarchy's own Plymouth reset (`omarchy plymouth reset`, or the Unlock/logo
+  menu that calls it) sets the default theme back to `omarchy`, turning vfill
+  off. The hook does not notice, because the marker still matches. Restore it
+  with `sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force`.
 
 ## Tests
 
@@ -98,4 +108,6 @@ Developed against Omarchy 4.0.4, Plymouth 26.134.222, on an AMD GPU with
 bash test/all
 ```
 
-Pure logic only — no root and no Plymouth required.
+No root and no Plymouth required. The privileged publish path is exercised
+inside an unprivileged user namespace (`unshare -r`) against scratch
+directories, with `plymouth-set-default-theme` and the initramfs tool stubbed.
