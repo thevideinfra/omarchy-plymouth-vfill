@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Recolour the installed omarchy-vfill Plymouth theme from the active Omarchy
+# theme and rebuild the initramfs. Run as root; the theme-set hook elevates via
+# pkexec, and it is safe to run by hand.
+#
+#   omarchy-vfill-retheme                     recolour if needed, then rebuild
+#   omarchy-vfill-retheme --check             exit 0 if a retheme is needed, 1 if not
+#   omarchy-vfill-retheme --theme-dir <path>  use <path> instead of resolving one
+#
+# --check performs no writes and needs no privileges, so the hook can decide
+# whether to prompt at all.
+
+set -uo pipefail
+
+REPO=$(cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
+THEME_DEST=${VFILL_THEME_DEST:-/usr/share/plymouth/themes/omarchy-vfill}
+OMARCHY_PATH=${OMARCHY_PATH:-/usr/share/omarchy}
+
+source "$REPO/lib/vfill.sh"
+
+# This script runs as root, where HOME is /root: pkexec sets it and sudo resets
+# it under the default env_reset policy. The Omarchy theme belongs to the
+# invoking user, so recover their home rather than trusting HOME.
+vfill_invoking_home() {
+  local user_home=""
+
+  if [[ -n ${PKEXEC_UID:-} ]]; then
+    user_home=$(getent passwd "$PKEXEC_UID" | cut -d: -f6)
+  elif [[ -n ${SUDO_USER:-} ]]; then
+    user_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  fi
+
+  [[ -n $user_home ]] || user_home="$HOME"
+  printf '%s\n' "$user_home"
+}
+
+THEME_DIR_OPT=""
+CHECK_ONLY=false
+
+while (($# > 0)); do
+  case "$1" in
+    --check) CHECK_ONLY=true ;;
+    --theme-dir) shift; THEME_DIR_OPT="${1:-}" ;;
+    *) echo "omarchy-vfill-retheme: unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -n $THEME_DIR_OPT ]]; then
+  CURRENT_THEME="$THEME_DIR_OPT"
+elif [[ -n ${VFILL_THEME_DIR:-} ]]; then
+  CURRENT_THEME="$VFILL_THEME_DIR"
+else
+  CURRENT_THEME="$(vfill_invoking_home)/.local/state/omarchy/current/theme"
+fi
+
+if [[ ! -d $CURRENT_THEME ]]; then
+  echo "omarchy-vfill-retheme: no active Omarchy theme at $CURRENT_THEME" >&2
+  exit 1
+fi
+
+background=$(vfill_read_color "$CURRENT_THEME/colors.toml" background) || {
+  echo "omarchy-vfill-retheme: no background in $CURRENT_THEME/colors.toml" >&2
+  exit 1
+}
+foreground=$(vfill_read_color "$CURRENT_THEME/colors.toml" foreground) || {
+  echo "omarchy-vfill-retheme: no foreground in $CURRENT_THEME/colors.toml" >&2
+  exit 1
+}
+logo=$(vfill_resolve_logo "$CURRENT_THEME" "$OMARCHY_PATH") || {
+  echo "omarchy-vfill-retheme: no logo available" >&2
+  exit 1
+}
+
+if vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo"; then
+  $CHECK_ONLY && exit 1
+  echo "omarchy-vfill-retheme: already current, nothing to do"
+  exit 0
+fi
+
+$CHECK_ONLY && exit 0
+
+if ((EUID != 0)); then
+  echo "omarchy-vfill-retheme: must run as root" >&2
+  exit 1
+fi
+
+staging=$(mktemp -d)
+trap 'rm -rf -- "$staging"' EXIT
+
+vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" || {
+  echo "omarchy-vfill-retheme: staging failed" >&2
+  exit 1
+}
+
+install -d -m 0755 -o root -g root "$THEME_DEST"
+for file in "$staging"/* "$staging"/.vfill-marker; do
+  install -m 0644 -o root -g root "$file" "$THEME_DEST/$(basename "$file")"
+done
+
+plymouth-set-default-theme omarchy-vfill
+
+rebuild=$(vfill_initramfs_command) || {
+  echo "omarchy-vfill-retheme: no initramfs tool found" >&2
+  exit 1
+}
+echo "omarchy-vfill-retheme: rebuilding initramfs with $rebuild"
+$rebuild
