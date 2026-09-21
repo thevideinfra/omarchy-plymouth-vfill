@@ -5,8 +5,9 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/base-test.sh"
 source "$ROOT/lib/vfill.sh"
 
+real_path="$PATH"
 scratch=$(new_scratch_dir)
-trap 'rm -rf -- "$scratch"' EXIT
+trap 'PATH="$real_path"; rm -rf -- "$scratch"' EXIT
 
 make_stub() {
   local name="$1"
@@ -15,7 +16,6 @@ make_stub() {
 }
 
 mkdir -p "$scratch/bin"
-real_path="$PATH"
 
 # limine-mkinitcpio wins when present, matching omarchy-plymouth-set.
 PATH="$scratch/bin"
