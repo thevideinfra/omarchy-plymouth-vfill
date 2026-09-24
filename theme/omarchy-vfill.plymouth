@@ -1,0 +1,11 @@
+[Plymouth Theme]
+Name=Omarchy VFill
+Description=Omarchy boot splash with the logo filling from the bottom up.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/omarchy-vfill
+ScriptFile=/usr/share/plymouth/themes/omarchy-vfill/omarchy-vfill.script
+ConsoleLogBackgroundColor=0x1a1b26
+MonospaceFont=Cantarell 11
+Font=Cantarell 11
