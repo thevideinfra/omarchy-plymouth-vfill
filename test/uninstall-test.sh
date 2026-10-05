@@ -73,8 +73,9 @@ pass "uninstall with no hook still leaves no hook behind"
 mapfile -d '' -t recorded <"$argv"
 assert_equals "/bin/bash -c" "${recorded[0]} ${recorded[1]}" \
   "the privileged step is a single root shell"
-assert_equals "bash /usr/share/plymouth/themes/omarchy-vfill /usr/local/lib/omarchy-vfill /run/lock/omarchy-vfill.lock limine-mkinitcpio" \
-  "${recorded[*]:3}" "the root shell is given the theme, prefix, lock and rebuild command"
+assert_equals "bash /usr/share/plymouth/themes/omarchy-vfill /usr/local/lib/omarchy-vfill /run/lock/omarchy-vfill.lock /usr/local/bin/omarchy-vfill-reboot /usr/local/share/applications/omarchy-vfill-reboot.desktop limine-mkinitcpio" \
+  "${recorded[*]:3}" \
+  "the root shell is given the theme, prefix, lock, mode-reboot artefacts and rebuild command"
 
 # --- A failed privileged step restores the hook and does not claim the theme
 #     is intact. ------------------------------------------------------------
@@ -96,16 +97,30 @@ pass "the failure message says to re-run uninstall"
 mapfile -d '' -t recorded <"$argv"
 script="${recorded[2]}"
 
+reboot_bin="$scratch/local-bin/omarchy-vfill-reboot"
+desktop_entry="$scratch/applications/omarchy-vfill-reboot.desktop"
+
 replay() {
   local dest="$1" prefix="$2"
   env PATH="$stubs:$PATH" \
-    unshare -r /bin/bash -c "$script" bash "$dest" "$prefix" "$scratch/lock" limine-mkinitcpio
+    unshare -r /bin/bash -c "$script" bash "$dest" "$prefix" "$scratch/lock" \
+      "$reboot_bin" "$desktop_entry" limine-mkinitcpio
+}
+
+# Mode reboot's artefacts, as a machine installed in that mode would have them.
+install_mode_reboot_artefacts() {
+  mkdir -p "$(dirname "$reboot_bin")" "$(dirname "$desktop_entry")"
+  printf '#!/bin/bash\n' >"$reboot_bin"
+  chmod +x "$reboot_bin"
+  printf '[Desktop Entry]\n' >"$desktop_entry"
 }
 
 dest="$scratch/themes/omarchy-vfill"
 prefix="$scratch/prefix"
 mkdir -p "$dest" "$dest.new.123" "$dest.old.456" "$prefix/bin" "$scratch/themes/omarchy"
 touch "$dest/.vfill-marker"
+printf 'reboot\n' >"$prefix/mode"
+install_mode_reboot_artefacts
 : >"$log"
 replay "$dest" "$prefix"
 assert_equals "0" "$?" "the root shell succeeds"
@@ -114,7 +129,21 @@ limine-mkinitcpio " "$(cat "$log")" "the root shell restores the default, then r
 assert_equals "omarchy" "$(ls "$scratch/themes")" \
   "the root shell removes the theme and any stranded .new/.old siblings, and nothing else"
 [[ ! -e $prefix ]] || fail "the root shell removes the prefix"
-pass "the root shell removes the prefix"
+pass "the root shell removes the prefix (and with it the recorded mode)"
+
+# Mode reboot's root-owned artefacts live outside the prefix, so removing the
+# prefix is not enough -- they have to be named.
+[[ ! -e $reboot_bin ]] || fail "the root shell removes the reboot command"
+pass "the root shell removes the reboot command"
+[[ ! -e $desktop_entry ]] || fail "the root shell removes the desktop entry"
+pass "the root shell removes the desktop entry"
+
+# A machine installed in mode theme-set or manual has neither, and the removal
+# must not turn that into a failure.
+mkdir -p "$dest" "$prefix"
+: >"$log"
+replay "$dest" "$prefix"
+assert_equals "0" "$?" "the root shell succeeds when mode reboot's artefacts are absent"
 
 # The root shell waits for the retheme lock.
 mkdir -p "$dest" "$prefix"
