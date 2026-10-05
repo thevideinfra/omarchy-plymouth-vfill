@@ -42,49 +42,82 @@ vfill_hex_to_floats() {
   printf '%s, %s, %s\n' "$r" "$g" "$b"
 }
 
-# Resource limits for every magick invocation. The images magick is pointed at
-# come from whatever theme the user installed, so a decompression bomb or a
-# pathological SVG must not be able to exhaust the machine -- especially since
-# the retheme runs as root. Declared once and reused, so the three call sites
-# below cannot drift apart. Guarded so sourcing this file twice is harmless.
-if [[ -z ${VFILL_MAGICK_LIMITS+x} ]]; then
-  readonly -a VFILL_MAGICK_LIMITS=(
-    -limit memory 128MiB
-    -limit map 256MiB
-    -limit disk 256MiB
-    -limit width 4096
-    -limit height 4096
-    -limit time 20
-  )
-fi
+# Resource limits for every magick invocation. magick renders the prompt
+# furniture and the logo.svg fallback, and a pathological SVG must not be able
+# to exhaust the machine -- especially since the retheme runs as root. Declared
+# once and reused, so the call sites below cannot drift apart.
+#
+# Declared unconditionally, and deliberately not under a [[ -z ${VAR+x} ]]
+# guard: that guard is satisfied by a plain environment variable, and bash never
+# builds an array out of the environment, so VFILL_MAGICK_LIMITS=BOGUS removed
+# every limit and injected a stray argv word into each call. Not readonly, so
+# sourcing this file twice is still harmless.
+declare -a VFILL_MAGICK_LIMITS=(
+  -limit memory 128MiB
+  -limit map 256MiB
+  -limit disk 256MiB
+  -limit width 4096
+  -limit height 4096
+  -limit time 20
+)
 
-# The largest theme-supplied unlock.png worth rendering. Real ones are a few
-# tens of kilobytes; anything past this is either a mistake or an attempt to
-# make the boot splash rebuild expensive, and the bundled fallback logo is a
-# better answer than a failed install.
-if [[ -z ${VFILL_MAX_UNLOCK_BYTES+x} ]]; then
-  readonly VFILL_MAX_UNLOCK_BYTES=$((8 * 1024 * 1024))
-fi
+# The largest theme-supplied unlock.png worth using. Real ones are a few tens of
+# kilobytes; anything past this is either a mistake or an attempt to make the
+# boot splash rebuild expensive, and the bundled fallback logo is a better
+# answer than a failed install.
+#
+# Also assigned unconditionally, for the same reason and one more: this value
+# reaches an arithmetic context, where VFILL_MAX_UNLOCK_BYTES='x[$(cmd)]' from
+# the environment would have run a command substitution.
+VFILL_MAX_UNLOCK_BYTES=$((8 * 1024 * 1024))
+
+# Render a byte count the way the size limit is written in a message, so the
+# message cannot drift from the bound it is reporting.
+vfill_format_bytes() {
+  local bytes="$1"
+
+  if ((bytes >= 1024 * 1024)) && ((bytes % (1024 * 1024) == 0)); then
+    printf '%s MiB\n' "$((bytes / 1024 / 1024))"
+  else
+    printf '%s bytes\n' "$bytes"
+  fi
+}
 
 # Prefer the active theme's own artwork. Themes are not required to ship
 # unlock.png (aurora, dracula and texas-longhorns do not), so fall back to
 # Omarchy's logo.svg, which is greyscale plus alpha and recolours cleanly.
 #
-# An unlock.png over VFILL_MAX_UNLOCK_BYTES is skipped rather than fatal: the
-# fallback logo still gives the user a working splash. The size is read with
-# stat -L, matching the symlink-following [[ -f ]] test above it and the read
-# that eventually happens, so a symlink cannot hide the real size. This is a
-# resource cap, not a trust boundary -- a racing swap after this check is
-# still caught by the descriptor ownership check in vfill_open_user_file,
-# which this deliberately leaves alone.
+# An unlock.png over the size bound is skipped rather than fatal: the fallback
+# logo still gives the user a working splash. The size is read with stat -L,
+# matching the symlink-following [[ -f ]] test above it and the read that
+# eventually happens, so a symlink cannot hide the real size. This is a resource
+# cap, not a trust boundary -- a racing swap after this check is still caught by
+# the descriptor ownership check in vfill_open_user_file, which this deliberately
+# leaves alone.
+#
+# The cap fails CLOSED: a file whose size cannot be read takes the fallback too.
+# Treating an unstattable unlock.png as "within the limit" skipped the only
+# check there was and used it anyway.
 vfill_resolve_logo() {
-  local theme_dir="$1" omarchy_path="$2" size
+  local theme_dir="$1" omarchy_path="$2" size bound
+
+  # A bound that is not a plain decimal byte count never reaches (( )), where
+  # 'x[$(cmd)]' would run a command substitution.
+  bound=${VFILL_MAX_UNLOCK_BYTES-}
+  if [[ ! $bound =~ ^[0-9]+$ ]]; then
+    printf 'vfill: ignoring a VFILL_MAX_UNLOCK_BYTES that is not a byte count; using %s\n' \
+      "$(vfill_format_bytes $((8 * 1024 * 1024)))" >&2
+    bound=$((8 * 1024 * 1024))
+  fi
 
   if [[ -f $theme_dir/unlock.png ]]; then
     size=$(stat -L -c %s "$theme_dir/unlock.png" 2>/dev/null) || size=""
-    if [[ -n $size ]] && ((size > VFILL_MAX_UNLOCK_BYTES)); then
-      printf 'vfill: ignoring %s: %s bytes exceeds the 8 MiB limit for a theme logo; using the fallback logo instead\n' \
-        "$theme_dir/unlock.png" "$size" >&2
+    if [[ ! $size =~ ^[0-9]+$ ]]; then
+      printf 'vfill: ignoring %s: cannot read its size; using the fallback logo instead\n' \
+        "$theme_dir/unlock.png" >&2
+    elif ((size > bound)); then
+      printf 'vfill: ignoring %s: %s bytes exceeds the %s limit for a theme logo; using the fallback logo instead\n' \
+        "$theme_dir/unlock.png" "$size" "$(vfill_format_bytes "$bound")" >&2
     else
       printf '%s\n' "$theme_dir/unlock.png"
       return 0

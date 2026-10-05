@@ -127,3 +127,116 @@ ln -s "$scratch/huge.png" "$theme_dir/unlock.png"
 assert_equals "$omarchy_path/logo.svg" \
   "$(vfill_resolve_logo "$theme_dir" "$omarchy_path" 2>/dev/null)" \
   "a symlink to an oversized file is refused too"
+
+# --- The cap fails closed when the size cannot be read. --------------------
+# An unstattable unlock.png used to be treated as "within the limit" and used
+# anyway, which skipped the only check there was. With stat failing, the
+# fallback logo is the right answer.
+
+rm -f -- "$theme_dir/unlock.png"
+printf 'fake png\n' >"$theme_dir/unlock.png"
+
+faildir="$scratch/failstat"
+mkdir -p "$faildir"
+printf '#!/bin/bash\nexit 1\n' >"$faildir/stat"
+chmod +x "$faildir/stat"
+
+saved_path="$PATH"
+PATH="$faildir:$PATH"
+resolved=$(vfill_resolve_logo "$theme_dir" "$omarchy_path" 2>"$scratch/failstat.err")
+status=$?
+PATH="$saved_path"
+
+assert_equals "0" "$status" "resolving still succeeds when the size cannot be read"
+assert_equals "$omarchy_path/logo.svg" "$resolved" \
+  "an unlock.png whose size cannot be read takes the fallback logo"
+message=$(<"$scratch/failstat.err")
+[[ $message == *"$theme_dir/unlock.png"* ]] ||
+  fail "the unreadable-size message names the file" "$message"
+pass "the unreadable-size message names the file"
+[[ $message == *"cannot read its size"* ]] ||
+  fail "the unreadable-size message says why" "$message"
+pass "the unreadable-size message says why"
+
+# --- The message is derived from the bound, not hardcoded. -----------------
+
+assert_equals "8 MiB" "$(vfill_format_bytes $((8 * 1024 * 1024)))" \
+  "a whole number of MiB is reported in MiB"
+assert_equals "12 MiB" "$(vfill_format_bytes $((12 * 1024 * 1024)))" \
+  "the MiB count follows the bound it is given"
+assert_equals "1234 bytes" "$(vfill_format_bytes 1234)" \
+  "a bound that is not a whole MiB is reported in bytes"
+
+truncate -s $((5 * 1024 * 1024)) "$theme_dir/unlock.png"
+message=$(VFILL_MAX_UNLOCK_BYTES=$((4 * 1024 * 1024)) \
+  vfill_resolve_logo "$theme_dir" "$omarchy_path" 2>&1 >/dev/null)
+[[ $message == *"4 MiB"* ]] ||
+  fail "the refusal reports the bound actually in force, not a hardcoded 8 MiB" "$message"
+pass "the refusal reports the bound actually in force"
+[[ $message != *"8 MiB"* ]] ||
+  fail "the refusal does not report a bound that is not in force" "$message"
+pass "the refusal does not report a bound that is not in force"
+unset VFILL_MAX_UNLOCK_BYTES
+source "$ROOT/lib/vfill.sh"
+
+# --- A hostile environment cannot disarm either guard. --------------------
+# Both are declared unconditionally now. The old [[ -z ${VAR+x} ]] guard was
+# satisfied by a plain environment variable, and bash never builds an array out
+# of the environment, so VFILL_MAGICK_LIMITS=BOGUS wiped every limit and
+# VFILL_MAX_UNLOCK_BYTES='x[$(cmd)]' reached an arithmetic context.
+
+probe="$scratch/probe.sh"
+cat >"$probe" <<'PROBE'
+#!/bin/bash
+source "$1/lib/vfill.sh"
+printf 'limits:%s\n' "${VFILL_MAGICK_LIMITS[*]}"
+printf 'bound:%s\n' "$VFILL_MAX_UNLOCK_BYTES"
+PROBE
+chmod +x "$probe"
+
+probe_out=$(VFILL_MAGICK_LIMITS=BOGUS bash "$probe" "$ROOT" 2>&1)
+assert_equals "limits:$EXPECTED_LIMITS" "$(grep '^limits:' <<<"$probe_out")" \
+  "a hostile VFILL_MAGICK_LIMITS in the environment does not change the limits"
+
+pwned="$scratch/pwned"
+rm -f -- "$pwned"
+probe_out=$(VFILL_MAX_UNLOCK_BYTES="x[\$(touch $pwned)]" bash "$probe" "$ROOT" 2>&1)
+assert_equals "bound:$((8 * 1024 * 1024))" "$(grep '^bound:' <<<"$probe_out")" \
+  "a hostile VFILL_MAX_UNLOCK_BYTES in the environment does not change the bound"
+[[ ! -e $pwned ]] ||
+  fail "a hostile VFILL_MAX_UNLOCK_BYTES executes nothing" "$pwned exists"
+pass "a hostile VFILL_MAX_UNLOCK_BYTES executes nothing"
+
+# The same value assigned after sourcing (so the unconditional assignment cannot
+# help) is refused at the point of use rather than reaching (( )).
+cat >"$probe" <<'PROBE'
+#!/bin/bash
+source "$1/lib/vfill.sh"
+VFILL_MAX_UNLOCK_BYTES="x[\$(touch $2)]"
+vfill_resolve_logo "$3" "$4"
+PROBE
+rm -f -- "$pwned"
+resolved=$(bash "$probe" "$ROOT" "$pwned" "$theme_dir" "$omarchy_path" 2>"$scratch/bound.err")
+status=$?
+assert_equals "0" "$status" "a non-numeric bound assigned at runtime does not break resolving"
+[[ ! -e $pwned ]] ||
+  fail "a non-numeric bound assigned at runtime executes nothing" "$pwned exists"
+pass "a non-numeric bound assigned at runtime executes nothing"
+[[ $(<"$scratch/bound.err") == *"not a byte count"* ]] ||
+  fail "a non-numeric bound is reported" "$(<"$scratch/bound.err")"
+pass "a non-numeric bound is reported"
+# It falls back to the real 8 MiB bound, so the 5 MiB unlock.png is accepted.
+assert_equals "$theme_dir/unlock.png" "$resolved" \
+  "a non-numeric bound falls back to the built-in 8 MiB bound"
+
+# --- Every magick call still carries the limits after all of that. ---------
+rm -rf -- "${dest:?}"/*
+: >"$calls"
+vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" >/dev/null 2>&1 ||
+  fail "staging still succeeds at the end of the run"
+mapfile -t recorded <"$calls"
+for call in "${recorded[@]}"; do
+  [[ $call == *"$EXPECTED_LIMITS"* ]] ||
+    fail "every magick call still carries the resource limits" "$call"
+done
+pass "every magick call still carries the resource limits"
