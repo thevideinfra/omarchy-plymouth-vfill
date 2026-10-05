@@ -167,17 +167,21 @@ assert_equals "12 MiB" "$(vfill_format_bytes $((12 * 1024 * 1024)))" \
 assert_equals "1234 bytes" "$(vfill_format_bytes 1234)" \
   "a bound that is not a whole MiB is reported in bytes"
 
+# In a subshell: a variable assignment prefixing a FUNCTION call persists in the
+# calling shell in bash, so this must not leak into the assertions below.
 truncate -s $((5 * 1024 * 1024)) "$theme_dir/unlock.png"
-message=$(VFILL_MAX_UNLOCK_BYTES=$((4 * 1024 * 1024)) \
-  vfill_resolve_logo "$theme_dir" "$omarchy_path" 2>&1 >/dev/null)
+message=$(
+  VFILL_MAX_UNLOCK_BYTES=$((4 * 1024 * 1024))
+  vfill_resolve_logo "$theme_dir" "$omarchy_path" 2>&1 >/dev/null
+)
 [[ $message == *"4 MiB"* ]] ||
   fail "the refusal reports the bound actually in force, not a hardcoded 8 MiB" "$message"
 pass "the refusal reports the bound actually in force"
 [[ $message != *"8 MiB"* ]] ||
   fail "the refusal does not report a bound that is not in force" "$message"
 pass "the refusal does not report a bound that is not in force"
-unset VFILL_MAX_UNLOCK_BYTES
-source "$ROOT/lib/vfill.sh"
+assert_equals "$((8 * 1024 * 1024))" "$VFILL_MAX_UNLOCK_BYTES" \
+  "the bound in this shell is still the built-in one"
 
 # --- A hostile environment cannot disarm either guard. --------------------
 # Both are declared unconditionally now. The old [[ -z ${VAR+x} ]] guard was
@@ -194,13 +198,17 @@ printf 'bound:%s\n' "$VFILL_MAX_UNLOCK_BYTES"
 PROBE
 chmod +x "$probe"
 
-probe_out=$(VFILL_MAGICK_LIMITS=BOGUS bash "$probe" "$ROOT" 2>&1)
+# Through env, not a command prefix: a prefix assignment is evaluated by this
+# shell, where VFILL_MAGICK_LIMITS is already an array, so it would set element
+# 0 and never reach the child's environment -- the test would pass for the wrong
+# reason. env builds the environment itself.
+probe_out=$(env VFILL_MAGICK_LIMITS=BOGUS bash "$probe" "$ROOT" 2>&1)
 assert_equals "limits:$EXPECTED_LIMITS" "$(grep '^limits:' <<<"$probe_out")" \
   "a hostile VFILL_MAGICK_LIMITS in the environment does not change the limits"
 
 pwned="$scratch/pwned"
 rm -f -- "$pwned"
-probe_out=$(VFILL_MAX_UNLOCK_BYTES="x[\$(touch $pwned)]" bash "$probe" "$ROOT" 2>&1)
+probe_out=$(env VFILL_MAX_UNLOCK_BYTES="x[\$(touch $pwned)]" bash "$probe" "$ROOT" 2>&1)
 assert_equals "bound:$((8 * 1024 * 1024))" "$(grep '^bound:' <<<"$probe_out")" \
   "a hostile VFILL_MAX_UNLOCK_BYTES in the environment does not change the bound"
 [[ ! -e $pwned ]] ||
