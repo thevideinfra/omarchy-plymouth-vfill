@@ -91,7 +91,7 @@ assert_equals "plymouth-set-default-theme omarchy-vfill
 limine-mkinitcpio " "$(stub_calls)" "a successful run sets the default, then rebuilds"
 
 check "$dest"
-assert_equals "1" "$?" "--check reports current right after a successful run"
+assert_equals "3" "$?" "--check reports current (exit 3) right after a successful run"
 
 assert_equals "$(sha256sum <"$dest/logo.png" | cut -d' ' -f1)" \
   "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest/.vfill-marker")" \
@@ -116,7 +116,7 @@ limine-mkinitcpio " "$(stub_calls)" "--force restages and rebuilds despite a mat
   fail "--force republishes the theme files"
 pass "--force republishes the theme files"
 check "$dest"
-assert_equals "1" "$?" "--check reports current after a --force run"
+assert_equals "3" "$?" "--check reports current (exit 3) after a --force run"
 
 # --check and --force together are rejected: --force only applies to a real run.
 check_force=$(VFILL_THEME_DEST="$dest" "$RETHEME" --check --force --theme-dir "$theme_dir" 2>&1)

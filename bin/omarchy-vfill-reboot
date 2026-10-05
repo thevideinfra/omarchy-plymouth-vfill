@@ -14,10 +14,18 @@
 
 set -uo pipefail
 
-# Overridable only so the tests can point it at a scratch stub, exactly like
-# VFILL_THEME_DEST in bin/omarchy-vfill-retheme; a real desktop launch never
-# sets it.
-RETHEME=${VFILL_RETHEME:-/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme}
+# Hardcoded on a real run. This is NOT the same situation as VFILL_THEME_DEST
+# and VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: those are read by the
+# already-elevated process, where sudo's env_reset and pkexec have long since
+# dropped them. This variable is read here, unprivileged, and it names the
+# program handed to pkexec -- so honouring it unconditionally would let the
+# environment choose what gets elevated. It is honoured only under VFILL_TEST,
+# which the tests set and nothing else does.
+if [[ -n ${VFILL_TEST:-} && -n ${VFILL_RETHEME:-} ]]; then
+  RETHEME=$VFILL_RETHEME
+else
+  RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
+fi
 THEME_DIR="$HOME/.local/state/omarchy/current/theme"
 
 [[ -x $RETHEME ]] || {
@@ -26,14 +34,9 @@ THEME_DIR="$HOME/.local/state/omarchy/current/theme"
   exit 1
 }
 
-# Checked here rather than left to the retheme: --check reports both "already
-# current" and most errors as exit 1, so a missing theme directory would
-# otherwise read as "nothing changed" and reboot with a stale splash.
-[[ -d $THEME_DIR ]] || {
-  echo "omarchy-vfill-reboot: no active Omarchy theme at $THEME_DIR" >&2
-  echo "omarchy-vfill-reboot: not rebooting" >&2
-  exit 1
-}
+# There is deliberately no check for $THEME_DIR here: --check reports a missing
+# or unreadable theme as an error distinct from "already current", so the
+# retheme's own message is better than one guessed at from the directory alone.
 
 # Same convention as install.sh and uninstall.sh: a terminal can take a sudo
 # password prompt, a desktop launch without one needs pkexec's dialog.
@@ -47,8 +50,9 @@ run_root() {
 
 # --check writes nothing and needs no privileges, so the common case -- the
 # theme has not changed -- never asks for a password at all. It exits 0 when a
-# retheme is needed and 1 when the splash is already current; anything higher
-# is a real error.
+# retheme is needed, 3 when the splash is already current, and anything else on
+# a real error. Its stderr is left alone so its own diagnostic reaches the user
+# verbatim; only those two codes are ever treated as "no problem".
 "$RETHEME" --check --theme-dir "$THEME_DIR"
 check_status=$?
 
@@ -61,11 +65,12 @@ case $check_status in
       exit 1
     }
     ;;
-  1)
+  3)
     echo "omarchy-vfill-reboot: the boot splash is already current; nothing to update."
     ;;
   *)
     echo "omarchy-vfill-reboot: could not check the boot splash (exit $check_status); NOT rebooting" >&2
+    echo "omarchy-vfill-reboot: the message above says why." >&2
     exit 1
     ;;
 esac
