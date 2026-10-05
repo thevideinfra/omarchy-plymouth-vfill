@@ -61,7 +61,9 @@ artefacts.
 
 `theme-set` is the default. Its hook checks first with `--check`, which needs no
 privileges and writes nothing, so a theme change that alters nothing the splash
-bakes in costs nothing — no prompt, no rebuild.
+bakes in costs nothing — no prompt, no rebuild. If that check cannot read the
+theme at all, the hook says so and does nothing, rather than treating a broken
+theme as one that needs no work.
 
 `reboot` only reboots if the update succeeded; if it failed or you cancelled the
 password prompt, it says so and the machine stays up. It runs in a terminal so
@@ -85,10 +87,17 @@ otherwise from Omarchy's `logo.svg` recoloured to the theme accent (the
 foreground, if the theme has no accent). Not every theme ships `unlock.png` —
 `aurora`, `dracula` and `texas-longhorns` do not.
 
-An `unlock.png` larger than 8 MiB is skipped, with a message, in favour of the
-`logo.svg` fallback. Every ImageMagick call is also capped (memory, map, disk,
-dimensions and time), since this artwork is whatever the theme shipped and the
-recolour runs as root.
+A theme's own `unlock.png` is copied into the theme as it is — it is never
+handed to ImageMagick — so what guards it is a size cap and an ownership check:
+one larger than 8 MiB is skipped with a message in favour of the `logo.svg`
+fallback, as is one whose size cannot even be read, and the file that is
+actually opened has to be a regular file the invoking user owns, so a symlink
+pointing at something else is refused rather than published into the initramfs.
+
+The ImageMagick calls are capped too (memory, map, disk, dimensions and time),
+and that matters because the recolour runs as root — but what they render is
+package-owned artwork: Omarchy's `logo.svg` and the prompt furniture from
+`/usr/share/omarchy`.
 
 ## Uninstall
 
