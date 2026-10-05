@@ -16,8 +16,16 @@ set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/base-test.sh"
 
-command -v unshare >/dev/null || fail "unshare is available"
-unshare -r true 2>/dev/null || fail "unprivileged user namespaces are available"
+# The privileged-transaction replay needs an unprivileged user namespace. Where
+# there is none, those assertions are skipped with a printed reason rather than
+# failing the suite: the machine's kernel configuration is not this project's
+# bug, and everything before the replay still runs.
+SKIP_NAMESPACE=""
+if ! command -v unshare >/dev/null; then
+  SKIP_NAMESPACE="unshare is not installed"
+elif ! unshare -r true 2>/dev/null; then
+  SKIP_NAMESPACE="unprivileged user namespaces are unavailable"
+fi
 
 scratch=$(new_scratch_dir)
 trap 'rm -rf -- "$scratch"' EXIT
@@ -175,6 +183,30 @@ pass "an unknown option is refused"
 [[ ! -f $argv ]] || fail "an unknown option runs nothing privileged"
 pass "an unknown option runs nothing privileged"
 
+# --- --mode with no value at all is refused, not silently defaulted. ------
+# It used to leave MODE empty, which skipped the validation, fell into the
+# prompt and -- with no tty -- took the default: the one mode that adds a
+# recurring password prompt.
+
+rm -f -- "$hook"
+for bad in "last-argument" "empty-value"; do
+  rm -f -- "$argv"
+  if [[ $bad == last-argument ]]; then
+    output=$(HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" --mode </dev/null 2>&1)
+  else
+    output=$(HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" --mode "" </dev/null 2>&1)
+  fi
+  status=$?
+  [[ $status -ne 0 ]] || fail "--mode with an $bad is refused" "$output"
+  [[ ! -f $argv ]] || fail "--mode with an $bad runs nothing privileged" "$output"
+  [[ $output != *"How should the boot splash"* ]] ||
+    fail "--mode with an $bad does not fall through to the prompt" "$output"
+  [[ $output == *"--mode needs a value"* ]] ||
+    fail "--mode with an $bad says the value is missing" "$output"
+  [[ ! -e $hook ]] || fail "--mode with an $bad installs no hook"
+done
+pass "--mode with a missing or empty value is refused, prompts nothing and installs nothing"
+
 # --- Switching modes on re-install removes the previous mode's hook. -----
 
 rm -f -- "$hook"
@@ -217,7 +249,64 @@ pass "install fails when the privileged step fails"
 [[ ! -e $hook ]] || fail "a failed privileged step installs no hook"
 pass "a failed privileged step installs no hook"
 
+# The mode file and mode reboot's artefacts are settled inside the same
+# transaction, before its final retheme, so "nothing else was changed" was a
+# lie whenever it failed at the retheme.
+[[ $output != *"nothing else was changed"* ]] ||
+  fail "the failure message does not claim nothing else was changed" "$output"
+pass "the failure message does not claim nothing else was changed"
+[[ $output == *"may already be in place"* ]] ||
+  fail "the failure message says what may already be in place" "$output"
+pass "the failure message says what may already be in place"
+[[ $output == *"No theme-set hook was installed"* ]] ||
+  fail "the failure message says no hook was installed" "$output"
+pass "the failure message says no hook was installed"
+
+# --- A failed render leaves the live hook alone. ------------------------
+# A redirection onto the hook truncates it before the render runs, so a failed
+# render used to leave an empty file behind that omarchy-hook still executes.
+# The render is made to fail by handing install.sh a checkout with no hook
+# template; everything privileged is still a stub.
+
+norender="$scratch/norender"
+mkdir -p "$norender/lib"
+cp "$ROOT/install.sh" "$norender/install.sh"
+cp "$ROOT/lib/vfill.sh" "$norender/lib/vfill.sh"
+[[ ! -e $norender/hooks/theme-set.sh ]] ||
+  fail "prerequisite: the no-template checkout really has no hook template"
+pass "prerequisite: the no-template checkout has no hook template"
+
+mkdir -p "$(dirname "$hook")"
+printf '#!/bin/bash
+# a working hook from the previous install
+' >"$hook"
+live_hook=$(cat "$hook")
+
+rm -f -- "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" bash "$norender/install.sh" --mode theme-set </dev/null 2>&1)
+[[ $? -ne 0 ]] || fail "install fails when the hook cannot be rendered" "$output"
+pass "install fails when the hook cannot be rendered"
+[[ -s $hook ]] || fail "a failed render leaves the live hook non-empty" "$(ls -l "$hook" 2>&1)"
+pass "a failed render leaves the live hook non-empty"
+assert_equals "$live_hook" "$(cat "$hook")" \
+  "a failed render leaves the live hook byte-for-byte as it was"
+assert_equals "" "$(find "$(dirname "$hook")" -maxdepth 1 -name '.omarchy-vfill.sh.*')" \
+  "a failed render leaves no temporary file behind in the hook directory"
+
+# A successful render still ends up with exactly one executable hook and no
+# temporary file beside it.
+rm -f -- "$hook"
+run_install "" --mode theme-set >/dev/null
+assert_equals "755" "$(stat -c %a "$hook")" "a successful render installs the hook 0755"
+assert_equals "" "$(find "$(dirname "$hook")" -maxdepth 1 -name '.omarchy-vfill.sh.*')" \
+  "a successful render leaves no temporary file behind either"
+
 # --- Replay the root transaction against scratch paths. -----------------
+
+if [[ -n $SKIP_NAMESPACE ]]; then
+  printf '# skip - the privileged-transaction replay needs unshare -r: %s\n' "$SKIP_NAMESPACE"
+  exit 0
+fi
 
 fakerepo="$scratch/fakerepo"
 mkdir -p "$fakerepo/bin" "$fakerepo/lib" "$fakerepo/theme" "$fakerepo/share"
@@ -295,3 +384,36 @@ for mode in manual theme-set; do
 done
 pass "switching away from mode reboot removes its command and desktop entry"
 pass "re-installing mode reboot puts its artefacts back"
+
+# --- Pre-existing system directories keep their mode and owner. ----------
+# /usr/local/bin and /usr/local/share/applications normally already exist and
+# belong to the system. install -d on them rewrites their mode and owner, so
+# they are created only when they are actually missing.
+
+existing_bin="$scratch/sysdirs/bin"
+existing_apps="$scratch/sysdirs/applications"
+mkdir -p "$existing_bin" "$existing_apps"
+chmod 0711 "$existing_bin"
+chmod 0700 "$existing_apps"
+
+env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
+  bash "$prefix" "$fakerepo" "$theme_dir" reboot \
+  "$existing_bin/omarchy-vfill-reboot" "$existing_apps/omarchy-vfill-reboot.desktop"
+assert_equals "0" "$?" "the root transaction succeeds into pre-existing directories"
+assert_equals "711" "$(stat -c %a "$existing_bin")" \
+  "a pre-existing /usr/local/bin keeps its mode"
+assert_equals "700" "$(stat -c %a "$existing_apps")" \
+  "a pre-existing /usr/local/share/applications keeps its mode"
+[[ -f $existing_bin/omarchy-vfill-reboot && -f $existing_apps/omarchy-vfill-reboot.desktop ]] ||
+  fail "the artefacts still land in pre-existing directories"
+pass "the artefacts still land in pre-existing directories"
+
+# A missing directory is still created, 0755.
+missing_bin="$scratch/newdirs/bin"
+missing_apps="$scratch/newdirs/applications"
+env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
+  bash "$prefix" "$fakerepo" "$theme_dir" reboot \
+  "$missing_bin/omarchy-vfill-reboot" "$missing_apps/omarchy-vfill-reboot.desktop"
+assert_equals "0" "$?" "the root transaction creates the directories when they are missing"
+assert_equals "755" "$(stat -c %a "$missing_bin")" "a created bin directory is 0755"
+assert_equals "755" "$(stat -c %a "$missing_apps")" "a created applications directory is 0755"

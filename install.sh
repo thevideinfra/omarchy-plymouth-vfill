@@ -12,8 +12,10 @@
 # and logo have not changed.
 #
 # How the splash keeps up with the desktop theme is the user's choice, made
-# here and recorded in $PREFIX/mode so a re-install and the uninstaller know
-# which artefacts exist:
+# here and recorded in $PREFIX/mode so the operator can see which mode is
+# active. Nothing reads that file: a re-install settles every mode's artefacts
+# whichever way it went, and the uninstaller removes all of them
+# unconditionally, so a mode file lost or never written changes nothing:
 #
 #   theme-set  a theme-set hook updates it when the colours change
 #   reboot     the "Reboot with updated boot splash" action updates it
@@ -48,8 +50,17 @@ MODE=""
 while (($# > 0)); do
   case "$1" in
     --mode)
+      # Refused before shifting. A missing or empty value used to leave MODE
+      # empty, which skipped the validation below, fell into the prompt and --
+      # with no tty -- silently took the default: the one mode that adds a
+      # recurring password prompt. The shift also failed silently at $#==0.
+      if (($# < 2)) || [[ -z $2 ]]; then
+        echo "install: --mode needs a value" >&2
+        echo "install: expected one of: theme-set, reboot, manual" >&2
+        exit 1
+      fi
+      MODE="$2"
       shift
-      MODE="${1:-}"
       ;;
     *)
       echo "install: unknown option: $1" >&2
@@ -168,7 +179,12 @@ run_root /bin/bash -c '
   printf "%s\n" "$mode" | install -m 0644 -o root -g root /dev/stdin "$prefix/mode"
 
   if [[ $mode == reboot ]]; then
-    install -d -m 0755 -o root -g root "$(dirname "$reboot_bin")" "$(dirname "$desktop_entry")"
+    # Created only when missing. /usr/local/bin and
+    # /usr/local/share/applications normally already exist and belong to the
+    # system; install -d on them would rewrite their mode and owner.
+    for dir in "$(dirname "$reboot_bin")" "$(dirname "$desktop_entry")"; do
+      [[ -d $dir ]] || install -d -m 0755 -o root -g root "$dir"
+    done
     install -m 0755 -o root -g root "$repo/bin/omarchy-vfill-reboot" "$reboot_bin"
     install -m 0644 -o root -g root "$repo/share/omarchy-vfill-reboot.desktop" "$desktop_entry"
   else
@@ -177,7 +193,11 @@ run_root /bin/bash -c '
 
   exec "$prefix/bin/omarchy-vfill-retheme" --force --theme-dir "$theme_dir"
 ' bash "$PREFIX" "$REPO" "$THEME_DIR" "$MODE" "$REBOOT_BIN" "$DESKTOP_ENTRY" || {
-  echo "install: privileged install/retheme step failed; nothing else was changed" >&2
+  echo "install: privileged install/retheme step failed." >&2
+  echo "install:   Depending on how far it got, $PREFIX, the recorded mode and" >&2
+  echo "install:   mode reboot's artefacts may already be in place; re-run" >&2
+  echo "install:   ./install.sh to finish. No theme-set hook was installed, and" >&2
+  echo "install:   the live Plymouth theme was not replaced." >&2
   exit 1
 }
 
@@ -191,11 +211,32 @@ if [[ $MODE == theme-set ]]; then
     echo "install: failed to create $HOOK_DIR" >&2
     exit 1
   }
-  vfill_render_hook "$REPO/hooks/theme-set.sh" "$PREFIX/bin/omarchy-vfill-retheme" >"$HOOK_DEST" || {
-    echo "install: failed to render the theme-set hook" >&2
+
+  # Rendered to a temp file and swapped in, never written over the live hook: a
+  # redirection onto $HOOK_DEST truncates it first, so a failed render on a
+  # re-install would leave an empty file that omarchy-hook still executes. The
+  # temp name starts with a dot, so omarchy-hook's dir/* glob never matches it
+  # even in the instant it exists, and it is made executable before the swap so
+  # the hook is never present-but-not-runnable.
+  hook_tmp=$(mktemp "$HOOK_DIR/.omarchy-vfill.sh.XXXXXX") || {
+    echo "install: failed to create a temporary file in $HOOK_DIR" >&2
     exit 1
   }
-  chmod 0755 "$HOOK_DEST"
+  if ! vfill_render_hook "$REPO/hooks/theme-set.sh" "$PREFIX/bin/omarchy-vfill-retheme" >"$hook_tmp"; then
+    rm -f -- "$hook_tmp"
+    echo "install: failed to render the theme-set hook; the previous hook, if any, is untouched" >&2
+    exit 1
+  fi
+  chmod 0755 "$hook_tmp" || {
+    rm -f -- "$hook_tmp"
+    echo "install: failed to make the theme-set hook executable" >&2
+    exit 1
+  }
+  mv -T -- "$hook_tmp" "$HOOK_DEST" || {
+    rm -f -- "$hook_tmp"
+    echo "install: failed to install the theme-set hook" >&2
+    exit 1
+  }
 elif [[ -f $HOOK_DEST ]]; then
   echo "install: removing the theme-set hook from a previous install"
   rm -f -- "$HOOK_DEST"
