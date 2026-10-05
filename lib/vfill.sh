@@ -42,15 +42,53 @@ vfill_hex_to_floats() {
   printf '%s, %s, %s\n' "$r" "$g" "$b"
 }
 
+# Resource limits for every magick invocation. The images magick is pointed at
+# come from whatever theme the user installed, so a decompression bomb or a
+# pathological SVG must not be able to exhaust the machine -- especially since
+# the retheme runs as root. Declared once and reused, so the three call sites
+# below cannot drift apart. Guarded so sourcing this file twice is harmless.
+if [[ -z ${VFILL_MAGICK_LIMITS+x} ]]; then
+  readonly -a VFILL_MAGICK_LIMITS=(
+    -limit memory 128MiB
+    -limit map 256MiB
+    -limit disk 256MiB
+    -limit width 4096
+    -limit height 4096
+    -limit time 20
+  )
+fi
+
+# The largest theme-supplied unlock.png worth rendering. Real ones are a few
+# tens of kilobytes; anything past this is either a mistake or an attempt to
+# make the boot splash rebuild expensive, and the bundled fallback logo is a
+# better answer than a failed install.
+if [[ -z ${VFILL_MAX_UNLOCK_BYTES+x} ]]; then
+  readonly VFILL_MAX_UNLOCK_BYTES=$((8 * 1024 * 1024))
+fi
+
 # Prefer the active theme's own artwork. Themes are not required to ship
 # unlock.png (aurora, dracula and texas-longhorns do not), so fall back to
 # Omarchy's logo.svg, which is greyscale plus alpha and recolours cleanly.
+#
+# An unlock.png over VFILL_MAX_UNLOCK_BYTES is skipped rather than fatal: the
+# fallback logo still gives the user a working splash. The size is read with
+# stat -L, matching the symlink-following [[ -f ]] test above it and the read
+# that eventually happens, so a symlink cannot hide the real size. This is a
+# resource cap, not a trust boundary -- a racing swap after this check is
+# still caught by the descriptor ownership check in vfill_open_user_file,
+# which this deliberately leaves alone.
 vfill_resolve_logo() {
-  local theme_dir="$1" omarchy_path="$2"
+  local theme_dir="$1" omarchy_path="$2" size
 
   if [[ -f $theme_dir/unlock.png ]]; then
-    printf '%s\n' "$theme_dir/unlock.png"
-    return 0
+    size=$(stat -L -c %s "$theme_dir/unlock.png" 2>/dev/null) || size=""
+    if [[ -n $size ]] && ((size > VFILL_MAX_UNLOCK_BYTES)); then
+      printf 'vfill: ignoring %s: %s bytes exceeds the 8 MiB limit for a theme logo; using the fallback logo instead\n' \
+        "$theme_dir/unlock.png" "$size" >&2
+    else
+      printf '%s\n' "$theme_dir/unlock.png"
+      return 0
+    fi
   fi
 
   if [[ -f $omarchy_path/logo.svg ]]; then
@@ -172,15 +210,15 @@ vfill_stage_theme() {
   local asset
   for asset in entry.png lock.png bullet.png; do
     install -m 0644 "$omarchy_path/default/plymouth/$asset" "$dest/$asset" || return 1
-    magick "$dest/$asset" -channel RGB +level-colors "#$foreground","#$foreground" "$dest/$asset" || return 1
+    magick "${VFILL_MAGICK_LIMITS[@]}" "$dest/$asset" -channel RGB +level-colors "#$foreground","#$foreground" "$dest/$asset" || return 1
   done
 
   # A theme's own unlock.png is already coloured and is used as-is. The
   # greyscale logo.svg fallback is rendered and flattened to the theme's
   # accent colour, or the foreground when the theme has no accent.
   if [[ $logo == *.svg ]]; then
-    magick -background none "$logo" "$dest/logo.png" || return 1
-    magick "$dest/logo.png" -channel RGB +level-colors "#$logo_color","#$logo_color" "$dest/logo.png" || return 1
+    magick "${VFILL_MAGICK_LIMITS[@]}" -background none "$logo" "$dest/logo.png" || return 1
+    magick "${VFILL_MAGICK_LIMITS[@]}" "$dest/logo.png" -channel RGB +level-colors "#$logo_color","#$logo_color" "$dest/logo.png" || return 1
   else
     install -m 0644 "$logo" "$dest/logo.png" || return 1
   fi
