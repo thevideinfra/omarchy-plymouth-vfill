@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# "Reboot with updated boot splash" -- the install mode `reboot` action.
+#
+# Runs as the user. Brings the omarchy-vfill splash in step with the current
+# Omarchy theme and then reboots, which is the one moment where paying for a
+# ~90 s initramfs rebuild costs the user nothing: the machine is going down
+# anyway, and the splash they are about to see is the one being rebuilt.
+#
+# The rule throughout is that the machine only goes down if the splash it
+# would come back up with is actually correct. Anything that goes wrong prints
+# why and exits non-zero without rebooting, so the user can fix it while the
+# session is still there rather than discovering it at the next boot.
+
+set -uo pipefail
+
+# Overridable only so the tests can point it at a scratch stub, exactly like
+# VFILL_THEME_DEST in bin/omarchy-vfill-retheme; a real desktop launch never
+# sets it.
+RETHEME=${VFILL_RETHEME:-/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme}
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+
+[[ -x $RETHEME ]] || {
+  echo "omarchy-vfill-reboot: not installed: $RETHEME" >&2
+  echo "omarchy-vfill-reboot: not rebooting" >&2
+  exit 1
+}
+
+# Checked here rather than left to the retheme: --check reports both "already
+# current" and most errors as exit 1, so a missing theme directory would
+# otherwise read as "nothing changed" and reboot with a stale splash.
+[[ -d $THEME_DIR ]] || {
+  echo "omarchy-vfill-reboot: no active Omarchy theme at $THEME_DIR" >&2
+  echo "omarchy-vfill-reboot: not rebooting" >&2
+  exit 1
+}
+
+# Same convention as install.sh and uninstall.sh: a terminal can take a sudo
+# password prompt, a desktop launch without one needs pkexec's dialog.
+run_root() {
+  if [[ -t 0 ]]; then
+    sudo "$@"
+  else
+    pkexec "$@"
+  fi
+}
+
+# --check writes nothing and needs no privileges, so the common case -- the
+# theme has not changed -- never asks for a password at all. It exits 0 when a
+# retheme is needed and 1 when the splash is already current; anything higher
+# is a real error.
+"$RETHEME" --check --theme-dir "$THEME_DIR"
+check_status=$?
+
+case $check_status in
+  0)
+    echo "omarchy-vfill-reboot: the theme changed; updating the boot splash first."
+    echo "omarchy-vfill-reboot: this rebuilds the initramfs and takes about 90 seconds."
+    run_root "$RETHEME" --theme-dir "$THEME_DIR" || {
+      echo "omarchy-vfill-reboot: the boot splash update failed or was cancelled; NOT rebooting" >&2
+      exit 1
+    }
+    ;;
+  1)
+    echo "omarchy-vfill-reboot: the boot splash is already current; nothing to update."
+    ;;
+  *)
+    echo "omarchy-vfill-reboot: could not check the boot splash (exit $check_status); NOT rebooting" >&2
+    exit 1
+    ;;
+esac
+
+echo "omarchy-vfill-reboot: rebooting."
+systemctl reboot || {
+  echo "omarchy-vfill-reboot: systemctl reboot failed; the boot splash is up to date" >&2
+  exit 1
+}

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Reboot with updated boot splash
+Comment=Recolour the boot splash for the current theme, then reboot
+Exec=/usr/local/bin/omarchy-vfill-reboot
+Terminal=true
+Icon=system-reboot
+Categories=System;
