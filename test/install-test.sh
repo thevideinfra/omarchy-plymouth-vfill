@@ -252,7 +252,7 @@ pass "the switch says the hook was removed"
 
 for pair in \
   "theme-set:at theme change" \
-  "reboot:Reboot with updated boot splash" \
+  "reboot:Plymouth vfill reboot" \
   "manual:by hand"; do
   mode=${pair%%:*}
   phrase=${pair#*:}

@@ -56,7 +56,7 @@ artefacts.
 | Mode | What updates the splash | What it costs |
 | --- | --- | --- |
 | `theme-set` | A hook at `~/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh`, whenever the theme's colours change | An authentication prompt and a ~90 s rebuild at each theme change that actually alters the splash |
-| `reboot` | The **Reboot with updated boot splash** launcher entry, or `/usr/local/bin/omarchy-vfill-reboot` | Nothing until you reboot, and the reboot takes ~90 s longer when the theme changed |
+| `reboot` | The **Plymouth vfill reboot** launcher entry, or `/usr/local/bin/omarchy-vfill-reboot` | Nothing until you reboot, and the reboot takes ~90 s longer when the theme changed |
 | `manual` | Nothing; you run the command below | Nothing, until you forget |
 
 `theme-set` is the default. Its hook checks first with `--check`, which needs no

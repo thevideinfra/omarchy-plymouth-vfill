@@ -310,7 +310,7 @@ assert_equals "[Desktop Entry]" "$(head -1 "$entry")" \
   "the desktop entry starts with the [Desktop Entry] group"
 for want in \
   "Type=Application" \
-  "Name=Reboot with updated boot splash" \
+  "Name=Plymouth vfill reboot" \
   "Exec=/usr/local/bin/omarchy-vfill-reboot" \
   "Terminal=true" \
   "Icon=system-reboot" \

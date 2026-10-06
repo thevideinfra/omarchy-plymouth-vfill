@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# "Reboot with updated boot splash" -- the install mode `reboot` action.
+# "Plymouth vfill reboot" -- the install mode `reboot` action.
 #
 # Runs as the user. Brings the omarchy-vfill splash in step with the current
 # Omarchy theme and then reboots, which is the one moment where paying for a

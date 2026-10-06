@@ -18,7 +18,7 @@
 # unconditionally, so a mode file lost or never written changes nothing:
 #
 #   theme-set  a theme-set hook updates it when the colours change
-#   reboot     the "Reboot with updated boot splash" action updates it
+#   reboot     the "Plymouth vfill reboot" action updates it
 #   manual     nothing does; the user runs the retheme command
 #
 # Whichever mode is chosen, this always works:
@@ -132,7 +132,7 @@ fi
 if [[ -z $MODE ]]; then
   echo "How should the boot splash follow your desktop theme?"
   echo "  1) At theme change — authenticate when the theme's colours change (default)"
-  echo "  2) Before reboot — update it from the \"Reboot with updated boot splash\" action"
+  echo "  2) Before reboot — update it from the \"Plymouth vfill reboot\" action"
   echo "  3) Manually — run the update command yourself"
 
   while [[ -z $MODE ]]; do
@@ -269,7 +269,7 @@ case "$MODE" in
     ;;
   reboot)
     echo "install: mode: before reboot. Nothing happens on a theme change; choose"
-    echo "install:   \"Reboot with updated boot splash\" from your launcher (or run"
+    echo "install:   \"Plymouth vfill reboot\" from your launcher (or run"
     echo "install:   $REBOOT_BIN) and the splash is brought up to"
     echo "install:   date first -- about 90 seconds -- and the machine reboots only if that worked."
     ;;
