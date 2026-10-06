@@ -237,6 +237,39 @@ pass "a non-numeric bound is reported"
 assert_equals "$theme_dir/unlock.png" "$resolved" \
   "a non-numeric bound falls back to the built-in 8 MiB bound"
 
+# --- An UNSET bound is not a bad bound. -----------------------------------
+# lib/vfill.sh sets it at source time, so unset means a caller unset it, not
+# that anyone supplied nonsense. Reporting "not a byte count" for a value nobody
+# gave sent the user looking for a variable they had never heard of.
+
+cat >"$probe" <<'PROBE'
+#!/bin/bash
+source "$1/lib/vfill.sh"
+unset VFILL_MAX_UNLOCK_BYTES
+vfill_resolve_logo "$2" "$3"
+PROBE
+resolved=$(bash "$probe" "$ROOT" "$theme_dir" "$omarchy_path" 2>"$scratch/unset.err")
+assert_equals "0" "$?" "an unset bound does not break resolving"
+assert_equals "" "$(<"$scratch/unset.err")" \
+  "an unset VFILL_MAX_UNLOCK_BYTES is reported as nothing at all"
+assert_equals "$theme_dir/unlock.png" "$resolved" \
+  "an unset bound still applies the built-in 8 MiB bound"
+
+# A value that IS set and is not a byte count is still reported -- including an
+# empty one, which is something the caller did supply.
+cat >"$probe" <<'PROBE'
+#!/bin/bash
+source "$1/lib/vfill.sh"
+VFILL_MAX_UNLOCK_BYTES=""
+vfill_resolve_logo "$2" "$3"
+PROBE
+resolved=$(bash "$probe" "$ROOT" "$theme_dir" "$omarchy_path" 2>"$scratch/empty.err")
+[[ $(<"$scratch/empty.err") == *"not a byte count"* ]] ||
+  fail "a bound set to the empty string is still reported" "$(<"$scratch/empty.err")"
+pass "a bound set to the empty string is still reported"
+assert_equals "$theme_dir/unlock.png" "$resolved" \
+  "a bound set to the empty string falls back to the built-in 8 MiB bound"
+
 # --- Every magick call still carries the limits after all of that. ---------
 rm -rf -- "${dest:?}"/*
 : >"$calls"

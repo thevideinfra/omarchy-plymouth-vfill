@@ -103,11 +103,21 @@ vfill_resolve_logo() {
 
   # A bound that is not a plain decimal byte count never reaches (( )), where
   # 'x[$(cmd)]' would run a command substitution.
-  bound=${VFILL_MAX_UNLOCK_BYTES-}
-  if [[ ! $bound =~ ^[0-9]+$ ]]; then
-    printf 'vfill: ignoring a VFILL_MAX_UNLOCK_BYTES that is not a byte count; using %s\n' \
-      "$(vfill_format_bytes $((8 * 1024 * 1024)))" >&2
+  #
+  # Unset is not the same as wrong. This file sets the bound at source time, so
+  # an unset one means a caller unset it, not that anyone supplied nonsense --
+  # and complaining about a value nobody gave sent the user looking for a
+  # variable they had never heard of. Only a value that is actually there, and
+  # is not a byte count, is worth a word.
+  if [[ -z ${VFILL_MAX_UNLOCK_BYTES+set} ]]; then
     bound=$((8 * 1024 * 1024))
+  else
+    bound=$VFILL_MAX_UNLOCK_BYTES
+    if [[ ! $bound =~ ^[0-9]+$ ]]; then
+      printf 'vfill: ignoring a VFILL_MAX_UNLOCK_BYTES that is not a byte count; using %s\n' \
+        "$(vfill_format_bytes $((8 * 1024 * 1024)))" >&2
+      bound=$((8 * 1024 * 1024))
+    fi
   fi
 
   if [[ -f $theme_dir/unlock.png ]]; then
