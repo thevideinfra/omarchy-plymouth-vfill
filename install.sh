@@ -102,6 +102,10 @@ if [[ -d $LEGACY_DIR ]] || [[ -f $HOOK_DIR/reapply-hook.sh ]]; then
   echo "  It patched Omarchy's packaged theme, which package upgrades overwrite."
   echo "  This will remove it and restore Omarchy's stock theme before continuing."
   echo "  That restore rebuilds the initramfs once; this install rebuilds it again."
+  # Defaulted because `read` leaves its variable UNSET on a read error -- a
+  # closed stdin, as a desktop launch has -- and set -u then killed the script
+  # with "reply: unbound variable" instead of taking the safe answer below.
+  reply=""
   read -r -p "  Remove it? [y/N] " reply
   [[ $reply == [yY] ]] || {
     echo "install: aborted; nothing was changed" >&2

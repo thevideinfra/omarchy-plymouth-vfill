@@ -207,6 +207,31 @@ for bad in "last-argument" "empty-value"; do
 done
 pass "--mode with a missing or empty value is refused, prompts nothing and installs nothing"
 
+# --- The legacy-migration prompt on a closed stdin aborts cleanly. --------
+# `read` leaves its variable UNSET on a read error -- a closed stdin, which is
+# what a desktop launch has -- so under set -u install.sh died with
+# "reply: unbound variable" and exit 127 instead of taking the safe answer.
+
+legacy_home="$scratch/legacy-home"
+mkdir -p "$legacy_home/.config/omarchy/plymouth-vfill"
+rm -f -- "$argv"
+output=$(HOME="$legacy_home" PATH="$stubs:$PATH" \
+  bash "$ROOT/install.sh" --mode manual 0<&- 2>&1)
+status=$?
+[[ $status -ne 0 ]] || fail "a refused legacy migration exits non-zero" "$output"
+pass "a refused legacy migration exits non-zero"
+[[ $output != *"unbound variable"* ]] ||
+  fail "the legacy-migration prompt survives a closed stdin" "$output"
+pass "the legacy-migration prompt survives a closed stdin"
+[[ $output == *"aborted; nothing was changed"* ]] ||
+  fail "a closed stdin takes the safe answer and says so" "$output"
+pass "a closed stdin takes the safe answer and says so"
+[[ ! -f $argv ]] || fail "an aborted legacy migration runs nothing privileged"
+pass "an aborted legacy migration runs nothing privileged"
+[[ -d $legacy_home/.config/omarchy/plymouth-vfill ]] ||
+  fail "an aborted legacy migration removes nothing"
+pass "an aborted legacy migration removes nothing"
+
 # --- Switching modes on re-install removes the previous mode's hook. -----
 
 rm -f -- "$hook"
