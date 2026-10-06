@@ -111,7 +111,7 @@ for bad in last-argument empty-value; do
     fail "--theme-dir with an $bad is refused, not treated as 0 or 3" "exit $status: $output"
   [[ $output == *"--theme-dir needs a value"* ]] ||
     fail "--theme-dir with an $bad says the value is missing" "$output"
-  [[ $output != *"$HOME"* ]] ||
+  [[ $output != *"$scratch/no-home"* ]] ||
     fail "--theme-dir with an $bad never falls back to the invoking HOME" "$output"
 done
 pass "--theme-dir with a missing or empty value is refused and says so"
