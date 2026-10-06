@@ -1,0 +1,14 @@
+// /etc/polkit-1/rules.d/49-omarchy-vfill.rules, root:root 0644
+//
+// Installed only by install mode `auto`, from inside install.sh's single
+// privileged transaction, and removed again by every other mode and by
+// uninstall.sh. The program path below must name the installed retheme
+// exactly; install.sh refuses to install this file if it does not, because a
+// stale path here would grant passwordless root to the wrong program.
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.policykit.exec" &&
+      action.lookup("program") == "/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme" &&
+      subject.isInLocalSession() && subject.active && subject.isInGroup("wheel")) {
+    return polkit.Result.YES;
+  }
+});

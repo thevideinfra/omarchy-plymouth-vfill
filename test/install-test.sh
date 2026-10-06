@@ -48,12 +48,47 @@ for other in omarchy plymouth-set-default-theme limine-mkinitcpio; do
   chmod +x "$stubs/$other"
 done
 
+# install.sh only ever looks polkitd up with command -v -- a rules file is read
+# by polkitd, so without one the rule would do nothing -- and must never run it.
+# This stub is loud and non-zero so that running it would be obvious.
+cat >"$stubs/polkitd" <<'STUB'
+#!/bin/bash
+echo "polkitd stub: must never be executed" >&2
+exit 97
+STUB
+chmod +x "$stubs/polkitd"
+
+# Mode auto refuses a user who is not in group wheel, since the rule would never
+# match them. The real id would report whatever groups the machine running the
+# suite happens to have, so that one question is answered by STUB_ID_GROUPS and
+# everything else passes through.
+REAL_ID=$(command -v id) || fail "id(1) is available"
+cat >"$stubs/id" <<STUB
+#!/bin/bash
+if [[ "\$*" == "-nG" ]]; then
+  printf '%s\n' "\${STUB_ID_GROUPS-someone wheel users}"
+  exit 0
+fi
+exec "$REAL_ID" "\$@"
+STUB
+chmod +x "$stubs/id"
+
 home="$scratch/home"
 mkdir -p "$home"
 hook="$home/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh"
 theme_dir="$home/.local/state/omarchy/current/theme"
 PREFIX=/usr/local/lib/omarchy-vfill
 MANUAL_COMMAND="sudo $PREFIX/bin/omarchy-vfill-retheme --force"
+
+# Mode auto's polkit rule. The real /etc/polkit-1/rules.d is never named except
+# in the one assertion below that checks the default, where nothing privileged
+# runs: everything that could write points at this scratch directory, which
+# install.sh accepts through VFILL_POLKIT_RULES_DIR the way the retheme accepts
+# VFILL_THEME_DEST.
+rules_dir="$scratch/polkit-rules.d"
+mkdir -p "$rules_dir"
+RULE_SRC="$ROOT/share/49-omarchy-vfill.rules"
+rule="$rules_dir/49-omarchy-vfill.rules"
 
 # First argument is what install.sh reads on stdin; the rest are its own
 # arguments. An empty first argument means an empty stdin, i.e. no answer.
@@ -62,12 +97,13 @@ run_install() {
   shift
   rm -f -- "$argv"
   printf '%s' "$answers" |
-    HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" "$@" 2>&1
+    HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+      bash "$ROOT/install.sh" "$@" 2>&1
 }
 
 # The privileged step is one root shell:
 #   /bin/bash -c <script> bash <prefix> <repo> <theme_dir> <mode> \
-#                              <reboot_bin> <desktop_entry>
+#                              <reboot_bin> <desktop_entry> <polkit_rule>
 load_root_argv() {
   [[ -f $argv ]] || fail "the privileged step was invoked"
   mapfile -d '' -t RECORDED <"$argv"
@@ -93,6 +129,8 @@ assert_equals "/usr/local/bin/omarchy-vfill-reboot" "${RECORDED[8]}" \
   "the privileged step is told where the reboot command goes"
 assert_equals "/usr/local/share/applications/omarchy-vfill-reboot.desktop" "${RECORDED[9]}" \
   "the privileged step is told where the desktop entry goes"
+assert_equals "$rule" "${RECORDED[10]}" \
+  "the privileged step is told where mode auto's polkit rule goes"
 
 [[ $output == *"How should the boot splash follow your desktop theme?"* ]] ||
   fail "the mode question is asked" "$output"
@@ -100,10 +138,11 @@ pass "the mode question is asked"
 for line in \
   "1) At theme change" \
   "2) Before reboot" \
-  "3) Manually"; do
+  "3) Manually" \
+  "4) At theme change, without a password"; do
   [[ $output == *"$line"* ]] || fail "the mode question offers: $line" "$output"
 done
-pass "the mode question offers all three modes"
+pass "the mode question offers all four modes"
 
 # --- Mode theme-set installs the hook, rendered and executable. -----------
 
@@ -148,7 +187,7 @@ assert_equals "0" "$?" "install succeeds once a valid answer is given"
 load_root_argv
 assert_equals "manual" "${RECORDED[7]}" \
   "a bad answer is not accepted; the next valid answer is used"
-assert_equals "2" "$(grep -c 'Please answer 1, 2 or 3' <<<"$output")" \
+assert_equals "2" "$(grep -c 'Please answer 1, 2, 3 or 4' <<<"$output")" \
   "each bad answer is refused and the question re-asked"
 
 # --- --mode works non-interactively and is not second-guessed. -----------
@@ -337,6 +376,8 @@ chmod +x "$partial/repo/bin/omarchy-vfill-retheme"
 : >"$partial/repo/theme/omarchy-vfill.script"
 cp "$ROOT/bin/omarchy-vfill-reboot" "$partial/repo/bin/omarchy-vfill-reboot"
 cp "$ROOT/share/omarchy-vfill-reboot.desktop" "$partial/repo/share/"
+cp "$ROOT/share/49-omarchy-vfill.rules" "$partial/repo/share/"
+mkdir -p "$partial/rules.d"
 
 # install.sh invokes: <elevate> /bin/bash -c <script> bash <prefix> <repo> \
 #   <theme_dir> <mode> <reboot_bin> <desktop_entry>
@@ -346,7 +387,8 @@ for elevate in sudo pkexec; do
 printf '%s\0' "\$@" >"$argv"
 exec env PATH="$partial/stubs:\$PATH" /bin/bash -c "\$3" bash \
   "$partial/prefix" "$partial/repo" "\$7" "\$8" \
-  "$partial/reboot-bin" "$partial/entry.desktop"
+  "$partial/reboot-bin" "$partial/entry.desktop" \
+  "$partial/rules.d/49-omarchy-vfill.rules"
 STUB
   chmod +x "$partial/stubs/$elevate"
 done
@@ -431,6 +473,239 @@ assert_equals "755" "$(stat -c %a "$hook")" "a successful render installs the ho
 assert_equals "" "$(find "$(dirname "$hook")" -maxdepth 1 -name '.omarchy-vfill.sh.*')" \
   "a successful render leaves no temporary file behind either"
 
+# --- The rule path defaults to the real /etc/polkit-1/rules.d. ------------
+# Nothing privileged runs here -- the elevate stub only records its arguments --
+# so the real directory is named and never touched.
+
+rm -f -- "$hook" "$argv"
+HOME="$home" PATH="$stubs:$PATH" bash "$ROOT/install.sh" --mode manual \
+  </dev/null >/dev/null 2>&1
+load_root_argv
+assert_equals "/etc/polkit-1/rules.d/49-omarchy-vfill.rules" "${RECORDED[10]}" \
+  "with nothing overriding it, the rule path is the real /etc/polkit-1/rules.d one"
+
+# --- The shipped rule approves exactly one program. ----------------------
+
+[[ -f $RULE_SRC ]] || fail "the polkit rule exists in the checkout"
+pass "the polkit rule exists in the checkout"
+grep -qF "\"$PREFIX/bin/omarchy-vfill-retheme\"" "$RULE_SRC" ||
+  fail "the shipped rule names the installed retheme" "$(cat "$RULE_SRC")"
+pass "the shipped rule names the installed retheme"
+for want in \
+  'action.id == "org.freedesktop.policykit.exec"' \
+  'subject.isInLocalSession()' \
+  'subject.active' \
+  'subject.isInGroup("wheel")' \
+  'polkit.Result.YES'; do
+  grep -qF "$want" "$RULE_SRC" ||
+    fail "the shipped rule requires $want" "$(cat "$RULE_SRC")"
+done
+pass "the shipped rule yields only for an active local wheel session"
+
+# --- --mode auto on its own is refused. ---------------------------------
+# No script should be able to turn the password prompt off by passing a mode
+# along; it takes a second, explicit flag.
+
+rm -f -- "$hook" "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+  bash "$ROOT/install.sh" --mode auto </dev/null 2>&1)
+status=$?
+[[ $status -ne 0 ]] || fail "--mode auto on its own is refused" "$output"
+pass "--mode auto on its own is refused"
+[[ ! -f $argv ]] || fail "--mode auto on its own runs nothing privileged" "$output"
+pass "--mode auto on its own runs nothing privileged"
+[[ ! -e $hook ]] || fail "--mode auto on its own installs no hook"
+pass "--mode auto on its own installs no hook"
+[[ ! -e $rule ]] || fail "--mode auto on its own writes no polkit rule"
+pass "--mode auto on its own writes no polkit rule"
+[[ $output == *"--mode auto --i-understand"* ]] ||
+  fail "the refusal names the flag that would enable it" "$output"
+pass "the refusal names the flag that would enable it"
+[[ $output == *"no prompt"* ]] ||
+  fail "the refusal says what the rule would allow" "$output"
+pass "the refusal says what the rule would allow"
+
+# --- --mode auto --i-understand installs the hook and the rule. ----------
+
+rm -f -- "$hook" "$argv"
+output=$(run_install "" --mode auto --i-understand)
+assert_equals "0" "$?" "--mode auto --i-understand succeeds"
+load_root_argv
+assert_equals "auto" "${RECORDED[7]}" "--mode auto --i-understand selects mode auto"
+assert_equals "$rule" "${RECORDED[10]}" \
+  "mode auto's transaction is told where the polkit rule goes"
+[[ ${RECORDED[2]} == *'install -m 0644 -o root -g root "$repo/share/49-omarchy-vfill.rules" "$polkit_rule"'* ]] ||
+  fail "the transaction installs the rule root-owned 0644 from the checkout" "${RECORDED[2]}"
+pass "the transaction installs the rule root-owned 0644 from the checkout"
+[[ $output != *"How should the boot splash"* ]] ||
+  fail "--mode auto --i-understand asks no question" "$output"
+pass "--mode auto --i-understand asks no question"
+[[ -f $hook ]] || fail "mode auto installs the theme-set hook"
+pass "mode auto installs the theme-set hook"
+grep -qF "$PREFIX/bin/omarchy-vfill-retheme" "$hook" ||
+  fail "mode auto's hook points at the installed root-owned retheme" "$(cat "$hook")"
+pass "mode auto's hook points at the installed root-owned retheme"
+# The rule is root-owned, so only the privileged transaction may write it; the
+# unprivileged half must not have produced it itself.
+[[ ! -e $rule ]] ||
+  fail "the unprivileged half writes no polkit rule of its own" "$(ls -l "$rule")"
+pass "the unprivileged half writes no polkit rule of its own"
+[[ $output == *"$rule"* ]] || fail "mode auto names the rule it installed" "$output"
+pass "mode auto names the rule it installed"
+[[ $output == *"with no prompt"* ]] ||
+  fail "mode auto says what the rule allows without a prompt" "$output"
+pass "mode auto says what the rule allows without a prompt"
+[[ $output == *"$MANUAL_COMMAND"* ]] ||
+  fail "mode auto names the always-available manual command" "$output"
+pass "mode auto names the always-available manual command"
+
+# --- Interactively, only the word yes in full chooses mode auto. ---------
+
+for reply in "no" "y" "YES" "yes please" ""; do
+  rm -f -- "$hook" "$argv"
+  output=$(run_install $'4\n'"$reply"$'\n3\n')
+  assert_equals "0" "$?" "the prompt carries on after a refused mode auto ('$reply')"
+  load_root_argv
+  assert_equals "manual" "${RECORDED[7]}" \
+    "answering '$reply' at the confirmation does not choose mode auto"
+  [[ $output == *"Mode auto not chosen"* ]] ||
+    fail "answering '$reply' says mode auto was not chosen" "$output"
+  [[ ! -e $hook ]] || fail "answering '$reply' installs no hook"
+done
+pass "only the word yes in full chooses mode auto"
+
+rm -f -- "$hook" "$argv"
+output=$(run_install $'\n')
+load_root_argv
+assert_equals "theme-set" "${RECORDED[7]}" \
+  "pressing Enter at the prompt takes theme-set, never mode auto"
+
+rm -f -- "$hook" "$argv"
+output=$(run_install $'4\nyes\n')
+assert_equals "0" "$?" "answering 4 and then yes succeeds"
+load_root_argv
+assert_equals "auto" "${RECORDED[7]}" "answering 4 and then yes chooses mode auto"
+[[ -f $hook ]] || fail "mode auto chosen interactively installs the hook"
+pass "mode auto chosen interactively installs the hook"
+
+for line in \
+  "Any process running as you, in an active local session, may run" \
+  "That one program only" \
+  "unlimited initramfs rebuilds" \
+  "the current image survives until a rebuild" \
+  "Remove it with ./uninstall.sh"; do
+  [[ $output == *"$line"* ]] || fail "the consent text says: $line" "$output"
+done
+pass "the consent text states the whole trade-off before asking"
+
+# --- Mode auto is refused where the rule could never work. ---------------
+
+for why in missing-rules-dir not-in-wheel; do
+  rm -f -- "$hook" "$argv"
+  if [[ $why == missing-rules-dir ]]; then
+    output=$(HOME="$home" PATH="$stubs:$PATH" \
+      VFILL_POLKIT_RULES_DIR="$scratch/no-such-rules.d" \
+      bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
+  else
+    output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+      STUB_ID_GROUPS="someone users" \
+      bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
+  fi
+  status=$?
+
+  [[ $status -ne 0 ]] || fail "mode auto is refused: $why" "$output"
+  [[ ! -f $argv ]] || fail "a refused mode auto runs nothing privileged: $why" "$output"
+  [[ ! -e $hook ]] || fail "a refused mode auto installs no hook: $why"
+  [[ ! -e $rule ]] || fail "a refused mode auto writes no polkit rule: $why"
+  [[ $output == *"mode auto is not available here"* ]] ||
+    fail "the refusal says mode auto is unavailable: $why" "$output"
+  [[ $output == *"mode 1 (theme-set)"* ]] ||
+    fail "the refusal points at mode theme-set: $why" "$output"
+
+  if [[ $why == missing-rules-dir ]]; then
+    [[ $output == *"$scratch/no-such-rules.d does not exist"* && $output == *"0.106"* ]] ||
+      fail "the refusal names the missing rules directory and the polkit version" "$output"
+  else
+    [[ $output == *"not in group wheel"* ]] ||
+      fail "the refusal says the user is not in group wheel" "$output"
+  fi
+done
+pass "mode auto is refused, with its reason, when rules.d is missing or the user is not in wheel"
+
+# Interactively the same conditions refuse the option and re-ask, rather than
+# ending the install.
+rm -f -- "$hook" "$argv"
+output=$(printf '%s' $'4\n3\n' | HOME="$home" PATH="$stubs:$PATH" \
+  VFILL_POLKIT_RULES_DIR="$rules_dir" STUB_ID_GROUPS="someone users" \
+  bash "$ROOT/install.sh" 2>&1)
+assert_equals "0" "$?" "an unavailable mode auto at the prompt does not end the install"
+load_root_argv
+assert_equals "manual" "${RECORDED[7]}" \
+  "an unavailable mode auto is refused at the prompt and the question re-asked"
+[[ $output == *"mode auto is not available here"* ]] ||
+  fail "the prompt says why mode auto is unavailable" "$output"
+pass "the prompt says why mode auto is unavailable"
+[[ $output != *"Any process running as you"* ]] ||
+  fail "an unavailable mode auto never asks for consent" "$output"
+pass "an unavailable mode auto never asks for consent"
+
+# --- A rule naming the wrong program is refused at install time. ---------
+# The rule hands one exact path passwordless root, so a rule whose path does not
+# match the retheme this installer installs must not be installed at all.
+
+mutant="$scratch/mutant"
+mkdir -p "$mutant"
+cp -R "$ROOT/install.sh" "$ROOT/lib" "$ROOT/hooks" "$ROOT/bin" "$ROOT/theme" \
+  "$ROOT/share" "$mutant/"
+sed -i 's|/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme|/usr/local/bin/some-other-program|g' \
+  "$mutant/share/49-omarchy-vfill.rules"
+grep -qF "$PREFIX/bin/omarchy-vfill-retheme" "$mutant/share/49-omarchy-vfill.rules" &&
+  fail "prerequisite: the mutated rule no longer names the installed retheme"
+pass "prerequisite: the mutated rule no longer names the installed retheme"
+
+rm -f -- "$hook" "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+  bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
+[[ $? -ne 0 ]] || fail "a rule naming the wrong program is refused" "$output"
+pass "a rule naming the wrong program is refused"
+[[ $output == *"does not name"* && $output == *"$PREFIX/bin/omarchy-vfill-retheme"* ]] ||
+  fail "the refusal says the rule does not name the installed retheme" "$output"
+pass "the refusal says the rule does not name the installed retheme"
+[[ ! -f $argv ]] || fail "a mismatched rule runs nothing privileged" "$output"
+pass "a mismatched rule runs nothing privileged"
+[[ ! -e $hook ]] || fail "a mismatched rule installs no hook"
+[[ ! -e $rule ]] || fail "a mismatched rule writes no polkit rule"
+pass "a mismatched rule installs neither the hook nor the rule"
+
+rm -f -- "$mutant/share/49-omarchy-vfill.rules" "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+  bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
+[[ $? -ne 0 ]] || fail "a missing rule file is refused" "$output"
+pass "a missing rule file is refused"
+[[ $output == *"is missing"* ]] ||
+  fail "the refusal says the rule file is missing" "$output"
+pass "the refusal says the rule file is missing"
+[[ ! -f $argv ]] || fail "a missing rule file runs nothing privileged" "$output"
+pass "a missing rule file runs nothing privileged"
+
+# --- Switching between the two hook modes keeps or drops the hook. -------
+
+rm -f -- "$hook"
+run_install "" --mode auto --i-understand >/dev/null
+[[ -f $hook ]] || fail "prerequisite: mode auto installed the hook"
+pass "prerequisite: mode auto installed the hook"
+run_install "" --mode theme-set >/dev/null
+assert_equals "0" "$?" "switching from auto to theme-set succeeds"
+[[ -f $hook ]] || fail "switching from auto to theme-set keeps the hook"
+pass "switching from auto to theme-set keeps the hook"
+
+run_install "" --mode auto --i-understand >/dev/null
+[[ -f $hook ]] || fail "prerequisite: mode auto installed the hook again"
+output=$(run_install "" --mode manual)
+assert_equals "0" "$?" "switching from auto to manual succeeds"
+[[ ! -e $hook ]] || fail "switching from auto to manual removes the hook" "$output"
+pass "switching from auto to manual removes the hook"
+
 # --- Replay the root transaction against scratch paths. -----------------
 
 if [[ -n $SKIP_NAMESPACE ]]; then
@@ -451,6 +726,7 @@ chmod +x "$fakerepo/bin/omarchy-vfill-retheme"
 : >"$fakerepo/theme/omarchy-vfill.script"
 cp "$ROOT/bin/omarchy-vfill-reboot" "$fakerepo/bin/omarchy-vfill-reboot"
 cp "$ROOT/share/omarchy-vfill-reboot.desktop" "$fakerepo/share/omarchy-vfill-reboot.desktop"
+cp "$ROOT/share/49-omarchy-vfill.rules" "$fakerepo/share/49-omarchy-vfill.rules"
 
 run_install "" --mode reboot >/dev/null
 load_root_argv
@@ -459,6 +735,10 @@ script="${RECORDED[2]}"
 prefix="$scratch/prefix"
 reboot_bin="$scratch/local-bin/omarchy-vfill-reboot"
 desktop_entry="$scratch/applications/omarchy-vfill-reboot.desktop"
+# The replay writes mode auto's rule here, never into /etc/polkit-1/rules.d.
+replay_rules_dir="$scratch/replay-rules.d"
+mkdir -p "$replay_rules_dir"
+replay_rule="$replay_rules_dir/49-omarchy-vfill.rules"
 
 # unshare -r maps our uid to 0, so a file the transaction created as root:root
 # shows up outside the namespace as owned by us. A different -o/-g would not:
@@ -469,7 +749,8 @@ replay() {
   local mode="$1"
   : >"$log"
   env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
-    bash "$prefix" "$fakerepo" "$theme_dir" "$mode" "$reboot_bin" "$desktop_entry"
+    bash "$prefix" "$fakerepo" "$theme_dir" "$mode" "$reboot_bin" "$desktop_entry" \
+    "$replay_rule"
 }
 
 replay reboot
@@ -515,6 +796,51 @@ done
 pass "switching away from mode reboot removes its command and desktop entry"
 pass "re-installing mode reboot puts its artefacts back"
 
+# --- Mode auto's polkit rule is installed and removed by the same single
+#     transaction, so switching modes still costs one authentication. --------
+
+replay auto
+assert_equals "0" "$?" "the root transaction succeeds in mode auto"
+assert_equals "auto" "$(cat "$prefix/mode")" "mode auto is recorded"
+[[ -f $replay_rule ]] || fail "mode auto installs the polkit rule"
+pass "mode auto installs the polkit rule"
+assert_equals "644" "$(stat -c %a "$replay_rule")" "the polkit rule is 0644"
+assert_equals "$NS_ROOT" "$(stat -c %u:%g "$replay_rule")" "the polkit rule is root-owned"
+cmp -s "$ROOT/share/49-omarchy-vfill.rules" "$replay_rule" ||
+  fail "the installed polkit rule matches the checkout" "$(cat "$replay_rule")"
+pass "the installed polkit rule matches the checkout"
+[[ ! -e $reboot_bin && ! -e $desktop_entry ]] ||
+  fail "mode auto installs none of mode reboot's artefacts"
+pass "mode auto installs none of mode reboot's artefacts"
+
+for mode in theme-set manual reboot; do
+  replay auto >/dev/null
+  [[ -f $replay_rule ]] || fail "prerequisite: mode auto put the rule back"
+  replay "$mode"
+  assert_equals "0" "$?" "the root transaction succeeds switching from auto to $mode"
+  [[ ! -e $replay_rule ]] || fail "switching from auto to $mode removes the polkit rule"
+done
+pass "switching away from mode auto removes the polkit rule"
+
+replay theme-set >/dev/null
+[[ ! -e $replay_rule ]] || fail "prerequisite: mode theme-set leaves no rule"
+replay auto
+assert_equals "0" "$?" "the root transaction succeeds switching from theme-set to auto"
+[[ -f $replay_rule ]] || fail "switching from theme-set to auto adds the polkit rule"
+pass "switching from theme-set to auto adds the polkit rule"
+
+# The rule's directory is never created by the transaction: install.sh refused
+# mode auto already if it was missing, because a polkit without it could not
+# read the rule anyway.
+replay theme-set >/dev/null
+missing_rules_dir="$scratch/never-created-rules.d"
+env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
+  bash "$prefix" "$fakerepo" "$theme_dir" auto "$reboot_bin" "$desktop_entry" \
+  "$missing_rules_dir/49-omarchy-vfill.rules" >/dev/null 2>&1
+[[ ! -e $missing_rules_dir ]] ||
+  fail "the transaction never creates the polkit rules directory"
+pass "the transaction never creates the polkit rules directory"
+
 # --- Pre-existing system directories keep their mode and owner. ----------
 # /usr/local/bin and /usr/local/share/applications normally already exist and
 # belong to the system. install -d on them rewrites their mode and owner, so
@@ -528,7 +854,8 @@ chmod 0700 "$existing_apps"
 
 env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
   bash "$prefix" "$fakerepo" "$theme_dir" reboot \
-  "$existing_bin/omarchy-vfill-reboot" "$existing_apps/omarchy-vfill-reboot.desktop"
+  "$existing_bin/omarchy-vfill-reboot" "$existing_apps/omarchy-vfill-reboot.desktop" \
+  "$replay_rule"
 assert_equals "0" "$?" "the root transaction succeeds into pre-existing directories"
 assert_equals "711" "$(stat -c %a "$existing_bin")" \
   "a pre-existing /usr/local/bin keeps its mode"
@@ -543,7 +870,8 @@ missing_bin="$scratch/newdirs/bin"
 missing_apps="$scratch/newdirs/applications"
 env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
   bash "$prefix" "$fakerepo" "$theme_dir" reboot \
-  "$missing_bin/omarchy-vfill-reboot" "$missing_apps/omarchy-vfill-reboot.desktop"
+  "$missing_bin/omarchy-vfill-reboot" "$missing_apps/omarchy-vfill-reboot.desktop" \
+  "$replay_rule"
 assert_equals "0" "$?" "the root transaction creates the directories when they are missing"
 assert_equals "755" "$(stat -c %a "$missing_bin")" "a created bin directory is 0755"
 assert_equals "755" "$(stat -c %a "$missing_apps")" "a created applications directory is 0755"

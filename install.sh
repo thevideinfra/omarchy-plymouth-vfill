@@ -20,6 +20,8 @@
 #   theme-set  a theme-set hook updates it when the colours change
 #   reboot     the "Plymouth vfill reboot" action updates it
 #   manual     nothing does; the user runs the retheme command
+#   auto       the same hook as theme-set, plus a polkit rule that lets it
+#              elevate that one root-owned program without a password
 #
 # Whichever mode is chosen, this always works:
 #   sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
@@ -42,10 +44,28 @@ THEME_DIR="$HOME/.local/state/omarchy/current/theme"
 # that transaction against scratch paths.
 REBOOT_BIN=/usr/local/bin/omarchy-vfill-reboot
 DESKTOP_ENTRY=/usr/local/share/applications/omarchy-vfill-reboot.desktop
+# Mode auto's polkit rule. Overridable only so the tests can point it at a
+# scratch directory instead of the real /etc/polkit-1/rules.d, exactly like
+# VFILL_THEME_DEST in bin/omarchy-vfill-retheme.
+#
+# This is not the VFILL_RETHEME situation in bin/omarchy-vfill-reboot, which
+# had to be gated: that variable named the program handed to pkexec, so
+# honouring it would have let the environment choose what gets elevated. This
+# one names a file the transaction writes with content from the checkout, in a
+# script that only ever runs unprivileged from the checkout and then asks the
+# user to authenticate -- so an override here grants whoever set it nothing
+# they could not get by editing this file.
+POLKIT_RULES_DIR=${VFILL_POLKIT_RULES_DIR:-/etc/polkit-1/rules.d}
+POLKIT_RULE_NAME=49-omarchy-vfill.rules
+POLKIT_RULE="$POLKIT_RULES_DIR/$POLKIT_RULE_NAME"
+POLKIT_RULE_SRC="$REPO/share/$POLKIT_RULE_NAME"
 
 source "$REPO/lib/vfill.sh"
 
 MODE=""
+# Mode auto is the one mode that cannot be chosen by accident: non-interactively
+# it needs this second flag as well, and interactively it needs the word "yes".
+I_UNDERSTAND=false
 
 while (($# > 0)); do
   case "$1" in
@@ -56,15 +76,20 @@ while (($# > 0)); do
       # recurring password prompt. The shift also failed silently at $#==0.
       if (($# < 2)) || [[ -z $2 ]]; then
         echo "install: --mode needs a value" >&2
-        echo "install: expected one of: theme-set, reboot, manual" >&2
+        echo "install: expected one of: theme-set, reboot, manual, auto" >&2
         exit 1
       fi
       MODE="$2"
       shift
       ;;
+    --i-understand)
+      # Takes no value, so there is nothing to refuse here; on its own it
+      # changes nothing, and only --mode auto requires it.
+      I_UNDERSTAND=true
+      ;;
     *)
       echo "install: unknown option: $1" >&2
-      echo "install: usage: ./install.sh [--mode theme-set|reboot|manual]" >&2
+      echo "install: usage: ./install.sh [--mode theme-set|reboot|manual|auto] [--i-understand]" >&2
       exit 1
       ;;
   esac
@@ -74,13 +99,109 @@ done
 # Validated before anything is inspected or changed, so a typo costs nothing.
 if [[ -n $MODE ]]; then
   case "$MODE" in
-    theme-set | reboot | manual) ;;
+    theme-set | reboot | manual | auto) ;;
     *)
       echo "install: unknown mode: $MODE" >&2
-      echo "install: expected one of: theme-set, reboot, manual" >&2
+      echo "install: expected one of: theme-set, reboot, manual, auto" >&2
       exit 1
       ;;
   esac
+fi
+
+# Why mode auto cannot work on this machine, or empty when it can. Everything
+# here is checked before anything is written: a rule that can never match is
+# worse than no rule, because the splash would look after itself and does not.
+AUTO_REFUSAL=""
+auto_supported() {
+  AUTO_REFUSAL=""
+
+  # Looked for, never run. A rules file is read by polkitd; with no polkitd it
+  # would just sit there.
+  if ! command -v polkitd >/dev/null && [[ ! -x /usr/lib/polkit-1/polkitd ]]; then
+    AUTO_REFUSAL="polkitd was not found, so a polkit rule would never be read"
+    return 1
+  fi
+
+  # JavaScript rules under rules.d are polkit 0.106 and newer. Older polkit has
+  # no such directory and would ignore the rule entirely.
+  if [[ ! -d $POLKIT_RULES_DIR ]]; then
+    AUTO_REFUSAL="$POLKIT_RULES_DIR does not exist, so this polkit is too old for JavaScript rules (0.106 or newer is needed)"
+    return 1
+  fi
+
+  # The rule matches only a subject in group wheel, so without it nothing
+  # changes: every retheme would still ask for a password.
+  local groups=""
+  groups=$(id -nG 2>/dev/null) || groups=""
+  case " $groups " in
+    *" wheel "*) ;;
+    *)
+      AUTO_REFUSAL="you are not in group wheel, so the rule would never match your session"
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+refuse_auto() {
+  echo "install: mode auto is not available here: $AUTO_REFUSAL." >&2
+  echo "install:   Use mode 1 (theme-set) instead -- the same hook, asking for your" >&2
+  echo "install:   password when the colours change." >&2
+}
+
+# The rule approves one exact program. If the shipped file names anything other
+# than the retheme this installer installs, installing it would grant
+# passwordless root to some other path, so refuse instead of guessing.
+check_rule_path() {
+  [[ -f $POLKIT_RULE_SRC ]] || {
+    echo "install: $POLKIT_RULE_SRC is missing; mode auto cannot be installed" >&2
+    return 1
+  }
+
+  grep -qF "\"$PREFIX/bin/omarchy-vfill-retheme\"" "$POLKIT_RULE_SRC" || {
+    echo "install: $POLKIT_RULE_SRC does not name \"$PREFIX/bin/omarchy-vfill-retheme\"" >&2
+    echo "install:   The rule has to name the program it approves exactly, or it would" >&2
+    echo "install:   grant passwordless root to a different path. Refusing to install it." >&2
+    return 1
+  }
+
+  return 0
+}
+
+auto_consent() {
+  echo "  Mode auto installs $POLKIT_RULE, which means:"
+  echo "    - Any process running as you, in an active local session, may run"
+  echo "      $PREFIX/bin/omarchy-vfill-retheme as root"
+  echo "      with no prompt. That one program only -- it is root-owned, so what the"
+  echo "      rule approves cannot be changed by you."
+  echo "    - It can therefore trigger unlimited initramfs rebuilds: disk and CPU"
+  echo "      churn, not a privilege leak."
+  echo "    - It writes the boot image; the current image survives until a rebuild"
+  echo "      succeeds."
+  echo "    - Remove it with ./uninstall.sh, or by switching to another mode."
+}
+
+# Non-interactively, mode auto needs the second flag as well: nothing that
+# merely passes --mode along should be able to turn off the password prompt.
+if [[ $MODE == auto ]]; then
+  $I_UNDERSTAND || {
+    echo "install: --mode auto on its own is refused." >&2
+    echo "install:   It installs a polkit rule that lets any process running as you, in" >&2
+    echo "install:   an active local session, run this as root with no prompt:" >&2
+    echo "install:     $PREFIX/bin/omarchy-vfill-retheme" >&2
+    echo "install:   That one root-owned program only, which can then rebuild the" >&2
+    echo "install:   initramfs as often as it likes." >&2
+    echo "install:   If that is what you want, say so explicitly:" >&2
+    echo "install:     ./install.sh --mode auto --i-understand" >&2
+    exit 1
+  }
+
+  auto_supported || {
+    refuse_auto
+    exit 1
+  }
+  check_rule_path || exit 1
 fi
 
 for required in magick plymouth-set-default-theme; do
@@ -134,6 +255,7 @@ if [[ -z $MODE ]]; then
   echo "  1) At theme change — authenticate when the theme's colours change (default)"
   echo "  2) Before reboot — update it from the \"Plymouth vfill reboot\" action"
   echo "  3) Manually — run the update command yourself"
+  echo "  4) At theme change, without a password — as 1, plus a polkit rule (advanced)"
 
   while [[ -z $MODE ]]; do
     if ! read -r -p "  Choice [1]: " reply; then
@@ -146,7 +268,29 @@ if [[ -z $MODE ]]; then
       1) MODE=theme-set ;;
       2) MODE=reboot ;;
       3) MODE=manual ;;
-      *) echo "  Please answer 1, 2 or 3." ;;
+      4)
+        # Never reached by pressing Enter -- "${reply:-1}" sends an empty answer
+        # to 1 -- and never taken without the word "yes" typed in full.
+        if ! auto_supported; then
+          refuse_auto
+          continue
+        fi
+
+        auto_consent
+        confirm=""
+        if ! read -r -p "  Type yes (in full) to choose mode auto: " confirm; then
+          echo "install: no answer given; mode auto not chosen"
+          continue
+        fi
+
+        if [[ $confirm == yes ]]; then
+          check_rule_path || exit 1
+          MODE=auto
+        else
+          echo "  Mode auto not chosen."
+        fi
+        ;;
+      *) echo "  Please answer 1, 2, 3 or 4." ;;
     esac
   done
 fi
@@ -165,12 +309,14 @@ echo "install: staging the theme into $PREFIX and applying it (requires root)"
 # where the user cannot write. The checkout is only the installation source.
 #
 # Every root-owned artefact of every mode is settled inside this one
-# transaction -- the mode file, and the reboot command and its desktop entry,
-# installed for mode reboot and removed for the others -- so switching modes
-# on a re-install still costs the user exactly one authentication.
+# transaction -- the mode file, the reboot command and its desktop entry
+# (installed for mode reboot, removed for the others) and mode auto's polkit
+# rule (installed for auto, removed for the others) -- so switching modes on a
+# re-install still costs the user exactly one authentication.
 run_root /bin/bash -c '
   set -euo pipefail
   prefix="$1" repo="$2" theme_dir="$3" mode="$4" reboot_bin="$5" desktop_entry="$6"
+  polkit_rule="$7"
 
   install -d -m 0755 -o root -g root "$prefix" "$prefix/bin" "$prefix/lib" "$prefix/theme"
   install -m 0755 -o root -g root "$repo/bin/omarchy-vfill-retheme" "$prefix/bin/omarchy-vfill-retheme"
@@ -196,8 +342,19 @@ run_root /bin/bash -c '
     rm -f -- "$reboot_bin" "$desktop_entry"
   fi
 
+  if [[ $mode == auto ]]; then
+    # Copied from the checkout like every other artefact -- never written here
+    # from a heredoc -- and never into a directory this creates: the installer
+    # refused mode auto already if rules.d was missing, because a polkit too
+    # old to have it is too old to read the rule.
+    install -m 0644 -o root -g root "$repo/share/49-omarchy-vfill.rules" "$polkit_rule"
+  else
+    rm -f -- "$polkit_rule"
+  fi
+
   exec "$prefix/bin/omarchy-vfill-retheme" --force --theme-dir "$theme_dir"
-' bash "$PREFIX" "$REPO" "$THEME_DIR" "$MODE" "$REBOOT_BIN" "$DESKTOP_ENTRY" || {
+' bash "$PREFIX" "$REPO" "$THEME_DIR" "$MODE" "$REBOOT_BIN" "$DESKTOP_ENTRY" \
+  "$POLKIT_RULE" || {
   # Everything above is honest about not knowing how far it got, because it
   # cannot: the transaction stages the prefix, writes the mode file, settles
   # mode reboot's artefacts and only then execs the retheme, which swaps the
@@ -207,8 +364,8 @@ run_root /bin/bash -c '
   # operator to walk away from a half-applied splash.
   echo "install: privileged install/retheme step failed." >&2
   echo "install:   Depending on how far it got, $PREFIX, the recorded mode and" >&2
-  echo "install:   mode reboot's artefacts may already be in place, and the live" >&2
-  echo "install:   Plymouth theme and the Plymouth default may already have been" >&2
+  echo "install:   mode reboot's or mode auto's artefacts may already be in place," >&2
+  echo "install:   and the live Plymouth theme and the Plymouth default may already have been" >&2
   echo "install:   changed with an initramfs that does not yet match them." >&2
   echo "install:   No theme-set hook was installed or removed by this run;" >&2
   echo "install:   one left by a previous install is still active." >&2
@@ -222,7 +379,7 @@ run_root /bin/bash -c '
 # succeeded there was no installed retheme for it to point at. A hook left by a
 # previous install in a different mode is removed for the same reason it is
 # installed: the mode file and the artefacts on disk have to agree.
-if [[ $MODE == theme-set ]]; then
+if [[ $MODE == theme-set || $MODE == auto ]]; then
   install -d -m 0755 "$HOOK_DIR" || {
     echo "install: failed to create $HOOK_DIR" >&2
     exit 1
@@ -275,6 +432,15 @@ case "$MODE" in
     ;;
   manual)
     echo "install: mode: manually. Nothing updates the splash for you."
+    ;;
+  auto)
+    echo "install: mode: at theme change, without a password. $HOOK_DEST"
+    echo "install:   updates the splash when the theme's colours change, and $POLKIT_RULE"
+    echo "install:   lets it do that without asking: any process running as you, in an active"
+    echo "install:   local session, may run $PREFIX/bin/omarchy-vfill-retheme"
+    echo "install:   as root with no prompt -- that one root-owned program only. Rebuilding"
+    echo "install:   still takes about 90 seconds; you just will not be asked first."
+    echo "install:   Remove the rule with ./uninstall.sh, or by re-installing in another mode."
     ;;
 esac
 
