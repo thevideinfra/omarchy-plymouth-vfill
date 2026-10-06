@@ -174,8 +174,9 @@ run_root /bin/bash -c '
   install -m 0644 -o root -g root \
     "$repo/theme/omarchy-vfill.plymouth" "$repo/theme/omarchy-vfill.script" "$prefix/theme/"
 
-  # Records what is installed, for the next install and for the uninstaller.
-  # Root-owned 0644: the user may read which mode is active, not change it.
+  # Records which mode is active for the operator to read, and nothing more:
+  # as the header says, no code reads this file back. Root-owned 0644, so the
+  # user may read it and not change it.
   printf "%s\n" "$mode" | install -m 0644 -o root -g root /dev/stdin "$prefix/mode"
 
   if [[ $mode == reboot ]]; then
