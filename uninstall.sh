@@ -4,11 +4,11 @@
 # own theme.
 #
 # Every mode's artefacts go, whichever mode is recorded in $PREFIX/mode: the
-# theme-set hook under $HOME, and mode reboot's root-owned command and desktop
-# entry. The mode file itself lives inside $PREFIX and goes with it. Nothing
-# reads the mode file to decide -- removing an artefact that is not there is
-# free, and that way a mode file lost or never written still leaves nothing
-# behind.
+# theme-set hook under $HOME, mode reboot's root-owned command and desktop
+# entry, and mode auto's polkit rule. The mode file itself lives inside $PREFIX
+# and goes with it. Nothing reads the mode file to decide -- removing an
+# artefact that is not there is free, and that way a mode file lost or never
+# written still leaves nothing behind.
 
 set -uo pipefail
 
@@ -26,6 +26,12 @@ PREFIX=/usr/local/lib/omarchy-vfill
 # scratch paths.
 REBOOT_BIN=/usr/local/bin/omarchy-vfill-reboot
 DESKTOP_ENTRY=/usr/local/share/applications/omarchy-vfill-reboot.desktop
+# Mode auto's polkit rule, removed whether or not it is there -- as with every
+# other artefact, the recorded mode is not consulted. Overridable only so the
+# tests can point it at a scratch directory instead of the real
+# /etc/polkit-1/rules.d, exactly like VFILL_THEME_DEST in
+# bin/omarchy-vfill-retheme; see the same note in install.sh.
+POLKIT_RULE=${VFILL_POLKIT_RULES_DIR:-/etc/polkit-1/rules.d}/49-omarchy-vfill.rules
 # The same lock bin/omarchy-vfill-retheme takes, so an uninstall never
 # interleaves with a retheme still publishing or rebuilding.
 LOCK_FILE=/run/lock/omarchy-vfill.lock
@@ -135,16 +141,18 @@ if run_root /bin/bash -c '
   set -uo pipefail
   shopt -s nullglob
   theme_dest="$1" prefix="$2" lock_file="$3" reboot_bin="$4" desktop_entry="$5"
-  shift 5
+  polkit_rule="$6"
+  shift 6
 
   exec {lock_fd}>>"$lock_file" || exit 1
   flock "$lock_fd" || exit 1
 
   plymouth-set-default-theme omarchy || exit 1
   rm -rf -- "$theme_dest" "$theme_dest".new.* "$theme_dest".old.* "$prefix" || exit 1
-  rm -f -- "$reboot_bin" "$desktop_entry" || exit 1
+  rm -f -- "$reboot_bin" "$desktop_entry" "$polkit_rule" || exit 1
   "$@"
-' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "$REBOOT_BIN" "$DESKTOP_ENTRY" "${rebuild_cmd[@]}"; then
+' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "$REBOOT_BIN" "$DESKTOP_ENTRY" \
+  "$POLKIT_RULE" "${rebuild_cmd[@]}"; then
   outcome=succeeded
   trap - INT TERM HUP
   $hook_staged && rm -f -- "$HOOK_STAGED"

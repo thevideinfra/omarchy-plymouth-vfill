@@ -73,9 +73,19 @@ pass "uninstall with no hook still leaves no hook behind"
 mapfile -d '' -t recorded <"$argv"
 assert_equals "/bin/bash -c" "${recorded[0]} ${recorded[1]}" \
   "the privileged step is a single root shell"
-assert_equals "bash /usr/share/plymouth/themes/omarchy-vfill /usr/local/lib/omarchy-vfill /run/lock/omarchy-vfill.lock /usr/local/bin/omarchy-vfill-reboot /usr/local/share/applications/omarchy-vfill-reboot.desktop limine-mkinitcpio" \
+assert_equals "bash /usr/share/plymouth/themes/omarchy-vfill /usr/local/lib/omarchy-vfill /run/lock/omarchy-vfill.lock /usr/local/bin/omarchy-vfill-reboot /usr/local/share/applications/omarchy-vfill-reboot.desktop /etc/polkit-1/rules.d/49-omarchy-vfill.rules limine-mkinitcpio" \
   "${recorded[*]:3}" \
-  "the root shell is given the theme, prefix, lock, mode-reboot artefacts and rebuild command"
+  "the root shell is given the theme, prefix, lock, mode-reboot artefacts, mode-auto rule and rebuild command"
+
+# The rule path is overridable the way VFILL_THEME_DEST is, so the replay below
+# never has to name the real /etc/polkit-1/rules.d. Nothing privileged runs in
+# either case: the elevate stub only records its arguments.
+rm -f -- "$argv"
+HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$scratch/polkit-rules.d" \
+  bash "$ROOT/uninstall.sh" </dev/null >/dev/null 2>&1
+mapfile -d '' -t recorded <"$argv"
+assert_equals "$scratch/polkit-rules.d/49-omarchy-vfill.rules" "${recorded[9]}" \
+  "the rule path handed to the root shell is overridable for the tests"
 
 # --- A failed privileged step restores the hook and does not claim the theme
 #     is intact. ------------------------------------------------------------
@@ -99,12 +109,15 @@ script="${recorded[2]}"
 
 reboot_bin="$scratch/local-bin/omarchy-vfill-reboot"
 desktop_entry="$scratch/applications/omarchy-vfill-reboot.desktop"
+# Mode auto's rule is replayed against a scratch directory, never against the
+# real /etc/polkit-1/rules.d.
+polkit_rule="$scratch/polkit-rules.d/49-omarchy-vfill.rules"
 
 replay() {
   local dest="$1" prefix="$2"
   env PATH="$stubs:$PATH" \
     unshare -r /bin/bash -c "$script" bash "$dest" "$prefix" "$scratch/lock" \
-      "$reboot_bin" "$desktop_entry" limine-mkinitcpio
+      "$reboot_bin" "$desktop_entry" "$polkit_rule" limine-mkinitcpio
 }
 
 # Mode reboot's artefacts, as a machine installed in that mode would have them.
@@ -115,12 +128,19 @@ install_mode_reboot_artefacts() {
   printf '[Desktop Entry]\n' >"$desktop_entry"
 }
 
+# Mode auto's rule, as a machine installed in that mode would have it.
+install_mode_auto_rule() {
+  mkdir -p "$(dirname "$polkit_rule")"
+  printf 'polkit.addRule(function(action, subject) {});\n' >"$polkit_rule"
+}
+
 dest="$scratch/themes/omarchy-vfill"
 prefix="$scratch/prefix"
 mkdir -p "$dest" "$dest.new.123" "$dest.old.456" "$prefix/bin" "$scratch/themes/omarchy"
 touch "$dest/.vfill-marker"
 printf 'reboot\n' >"$prefix/mode"
 install_mode_reboot_artefacts
+install_mode_auto_rule
 : >"$log"
 replay "$dest" "$prefix"
 assert_equals "0" "$?" "the root shell succeeds"
@@ -138,12 +158,22 @@ pass "the root shell removes the reboot command"
 [[ ! -e $desktop_entry ]] || fail "the root shell removes the desktop entry"
 pass "the root shell removes the desktop entry"
 
-# A machine installed in mode theme-set or manual has neither, and the removal
-# must not turn that into a failure.
+# Mode auto's polkit rule, likewise: it lives in /etc, outside the prefix, and
+# has to be named to go.
+[[ ! -e $polkit_rule ]] || fail "the root shell removes mode auto's polkit rule"
+pass "the root shell removes mode auto's polkit rule"
+[[ -d $(dirname "$polkit_rule") ]] ||
+  fail "the root shell removes the rule, not the polkit rules directory"
+pass "the root shell removes the rule, not the polkit rules directory"
+
+# A machine installed in mode theme-set or manual has none of them, and the
+# removal must not turn that into a failure.
 mkdir -p "$dest" "$prefix"
 : >"$log"
 replay "$dest" "$prefix"
-assert_equals "0" "$?" "the root shell succeeds when mode reboot's artefacts are absent"
+assert_equals "0" "$?" "the root shell succeeds when mode reboot's and mode auto's artefacts are absent"
+[[ ! -e $polkit_rule ]] || fail "an absent polkit rule stays absent"
+pass "removing an absent polkit rule is not an error"
 
 # The root shell waits for the retheme lock.
 mkdir -p "$dest" "$prefix"
