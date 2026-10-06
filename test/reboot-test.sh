@@ -18,8 +18,6 @@ source "$ROOT/lib/vfill.sh"
 
 REBOOT="$ROOT/bin/omarchy-vfill-reboot"
 
-command -v magick >/dev/null || fail "magick is available"
-
 # The installed-copy case needs a user+mount namespace to stand a tmpfs over
 # /usr/local. Where there is none it is skipped with a printed reason rather
 # than failing the suite -- the kernel's configuration is not this project's
@@ -206,38 +204,42 @@ pass "says there is no active Omarchy theme"
 # reaches exit 3 only through the stub's STUB_CHECK_EXIT, so none of them would
 # notice that branch exiting 1 again -- and a 1 is an error, which refuses to
 # reboot. This is the case that notices.
-current_home="$scratch/current-home"
-current_theme="$current_home/.local/state/omarchy/current/theme"
-mkdir -p "$current_theme"
-cat >"$current_theme/colors.toml" <<'EOF'
+if ! command -v magick >/dev/null; then
+  printf '# skip - the real already-current case needs ImageMagick to draw its logo: magick is not installed\n'
+else
+  current_home="$scratch/current-home"
+  current_theme="$current_home/.local/state/omarchy/current/theme"
+  mkdir -p "$current_theme"
+  cat >"$current_theme/colors.toml" <<'EOF'
 background = "#140F1F"
 foreground = "#DFEDE5"
 EOF
-magick -size 40x10 xc:white -alpha set "$current_theme/unlock.png"
+  magick -size 40x10 xc:white -alpha set "$current_theme/unlock.png"
 
-current_dest="$scratch/current-dest"
-mkdir -p "$current_dest"
-# The same marker a successful retheme leaves behind: background, foreground,
-# the logo path and the logo colour the real --check recomputes from the theme.
-vfill_write_marker "$current_dest/.vfill-marker" \
-  "140F1F" "DFEDE5" "$current_theme/unlock.png" "DFEDE5" ||
-  fail "prerequisite: the matching marker is written"
-pass "prerequisite: a scratch destination with a marker matching a real theme"
+  current_dest="$scratch/current-dest"
+  mkdir -p "$current_dest"
+  # The same marker a successful retheme leaves behind: background, foreground,
+  # the logo path and the logo colour the real --check recomputes from the theme.
+  vfill_write_marker "$current_dest/.vfill-marker" \
+    "140F1F" "DFEDE5" "$current_theme/unlock.png" "DFEDE5" ||
+    fail "prerequisite: the matching marker is written"
+  pass "prerequisite: a scratch destination with a marker matching a real theme"
 
-output=$(run_reboot_real "$current_home" "$current_dest")
-assert_equals "0" "$?" "succeeds when the real check finds the splash already current"
-rebooted ||
-  fail "reboots when the real check finds the splash already current" "$output
-$(cat "$log")"
-pass "reboots when the real check finds the splash already current"
-assert_equals "systemctl reboot" "$(cat "$log")" \
-  "the real already-current path reboots and elevates nothing"
-[[ $output == *"already current"* ]] ||
-  fail "says the splash is already current" "$output"
-pass "says the splash is already current"
-assert_equals "$(find "$current_dest" -mindepth 1 | sort)" \
-  "$current_dest/.vfill-marker" \
-  "the real already-current check left the destination exactly as it was"
+  output=$(run_reboot_real "$current_home" "$current_dest")
+  assert_equals "0" "$?" "succeeds when the real check finds the splash already current"
+  rebooted ||
+    fail "reboots when the real check finds the splash already current" "$output
+  $(cat "$log")"
+  pass "reboots when the real check finds the splash already current"
+  assert_equals "systemctl reboot" "$(cat "$log")" \
+    "the real already-current path reboots and elevates nothing"
+  [[ $output == *"already current"* ]] ||
+    fail "says the splash is already current" "$output"
+  pass "says the splash is already current"
+  assert_equals "$current_dest/.vfill-marker" \
+    "$(find "$current_dest" -mindepth 1 | sort)" \
+    "the real already-current check left the destination exactly as it was"
+fi
 
 # --check must have written nothing to the scratch destination.
 assert_equals "" "$(find "$real_dest" -mindepth 1 | sort)" \
