@@ -39,6 +39,10 @@ For a scripted install, answer the question up front and nothing is prompted:
 ./install.sh --mode theme-set   # or: reboot, manual
 ```
 
+`auto` needs a second flag as well — `./install.sh --mode auto --i-understand` —
+so no script can turn the password prompt off by accident. See
+[Mode `auto`](#mode-auto-passwordless) for what it costs you.
+
 The installer detects an earlier hook-patch installation of the same idea and
 offers to remove it first; leaving both in place would mean two mechanisms
 fighting over the splash. Removing it runs `omarchy plymouth reset`, which asks
@@ -48,16 +52,17 @@ twice and rebuilds twice.
 ## Keeping the splash in step with your theme
 
 Nothing upstream recolours `omarchy-vfill`, so something has to. Recolouring
-means a root-privileged initramfs rebuild of roughly 90 seconds, and the three
-modes differ only in when you pay for it. Pick one at install time; re-run
-`./install.sh` to change your mind, which removes the previous mode's
-artefacts.
+means a root-privileged initramfs rebuild of roughly 90 seconds, and the four
+modes differ only in when you pay for it, and whether you are asked first. Pick
+one at install time; re-run `./install.sh` to change your mind, which removes the
+previous mode's artefacts.
 
 | Mode | What updates the splash | What it costs |
 | --- | --- | --- |
 | `theme-set` | A hook at `~/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh`, whenever the theme's colours change | An authentication prompt and a ~90 s rebuild at each theme change that actually alters the splash |
 | `reboot` | The **Plymouth vfill reboot** launcher entry, or `/usr/local/bin/omarchy-vfill-reboot` | Nothing until you reboot, and the reboot takes ~90 s longer when the theme changed |
 | `manual` | Nothing; you run the command below | Nothing, until you forget |
+| `auto` | The same hook as `theme-set` | No prompt and no ~90 s wait you have to sit through — paid for with a polkit rule that gives one program passwordless root |
 
 `theme-set` is the default. Its hook checks first with `--check`, which needs no
 privileges and writes nothing, so a theme change that alters nothing the splash
@@ -68,6 +73,41 @@ theme as one that needs no work.
 `reboot` only reboots if the update succeeded; if it failed or you cancelled the
 password prompt, it says so and the machine stays up. It runs in a terminal so
 you can watch the rebuild.
+
+`manual` installs nothing that runs by itself; you run the command below when
+you notice the splash is stale.
+
+<a id="mode-auto-passwordless"></a>
+
+### Mode `auto` — no password prompt
+
+`auto` installs the same hook as `theme-set`, plus
+`/etc/polkit-1/rules.d/49-omarchy-vfill.rules` (root-owned, 0644), which lets
+`pkexec` run one exact program without authenticating. In plain terms:
+
+- Any process running as you, in an active local session, may run
+  `/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme` as root with no
+  prompt. That one program only — it is root-owned, so what the rule approves
+  cannot be changed by you.
+- It can therefore trigger unlimited initramfs rebuilds: disk and CPU churn, not
+  a privilege leak.
+- It writes the boot image; the current image survives until a rebuild succeeds.
+- Remove it with `./uninstall.sh`, or by switching to another mode.
+
+The last point is the one worth sitting with: what keeps this safe is that one
+script being correct. The rule grants root to
+`omarchy-vfill-retheme` and nothing else, so every bug in that script — anything
+it would run, write or trust — becomes a bug that runs as root without anyone
+being asked first. If you are not willing to make that bet on this project's
+code, use `theme-set`, which does exactly the same work and asks you each time.
+
+`auto` is never the default and never reachable by pressing Enter: interactively
+it is option 4 and you have to type `yes` in full; non-interactively it needs
+`--mode auto --i-understand`. The installer refuses it outright when the rule
+could not work anyway — no `polkitd`, no `/etc/polkit-1/rules.d` (polkit older
+than 0.106), or an invoking user who is not in group `wheel` — and refuses it
+when the shipped rule's program path does not match the retheme being installed,
+rather than granting passwordless root to the wrong path.
 
 ### The manual command
 
@@ -109,8 +149,10 @@ Restores Omarchy's stock splash.
 
 It removes `/usr/local/lib/omarchy-vfill/`, the `omarchy-vfill` theme, and
 whichever mode's artefacts are present — the theme-set hook,
-`/usr/local/bin/omarchy-vfill-reboot` and its desktop entry — then rebuilds the
-initramfs.
+`/usr/local/bin/omarchy-vfill-reboot` and its desktop entry, and
+`/etc/polkit-1/rules.d/49-omarchy-vfill.rules` — then rebuilds the initramfs.
+The polkit rule goes whether or not it was ever installed, so no mode leaves
+passwordless root behind.
 
 ## Requirements
 
