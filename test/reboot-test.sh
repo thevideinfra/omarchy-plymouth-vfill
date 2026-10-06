@@ -200,6 +200,45 @@ pass "does NOT reboot when there is no active Omarchy theme"
   fail "says there is no active Omarchy theme" "$output"
 pass "says there is no active Omarchy theme"
 
+# A real, healthy "already current": a scratch destination holding a marker
+# that matches a real theme directory, so the real --check takes its exit-3
+# branch and the reboot goes ahead without elevating anything. Every case above
+# reaches exit 3 only through the stub's STUB_CHECK_EXIT, so none of them would
+# notice that branch exiting 1 again -- and a 1 is an error, which refuses to
+# reboot. This is the case that notices.
+current_home="$scratch/current-home"
+current_theme="$current_home/.local/state/omarchy/current/theme"
+mkdir -p "$current_theme"
+cat >"$current_theme/colors.toml" <<'EOF'
+background = "#140F1F"
+foreground = "#DFEDE5"
+EOF
+magick -size 40x10 xc:white -alpha set "$current_theme/unlock.png"
+
+current_dest="$scratch/current-dest"
+mkdir -p "$current_dest"
+# The same marker a successful retheme leaves behind: background, foreground,
+# the logo path and the logo colour the real --check recomputes from the theme.
+vfill_write_marker "$current_dest/.vfill-marker" \
+  "140F1F" "DFEDE5" "$current_theme/unlock.png" "DFEDE5" ||
+  fail "prerequisite: the matching marker is written"
+pass "prerequisite: a scratch destination with a marker matching a real theme"
+
+output=$(run_reboot_real "$current_home" "$current_dest")
+assert_equals "0" "$?" "succeeds when the real check finds the splash already current"
+rebooted ||
+  fail "reboots when the real check finds the splash already current" "$output
+$(cat "$log")"
+pass "reboots when the real check finds the splash already current"
+assert_equals "systemctl reboot" "$(cat "$log")" \
+  "the real already-current path reboots and elevates nothing"
+[[ $output == *"already current"* ]] ||
+  fail "says the splash is already current" "$output"
+pass "says the splash is already current"
+assert_equals "$(find "$current_dest" -mindepth 1 | sort)" \
+  "$current_dest/.vfill-marker" \
+  "the real already-current check left the destination exactly as it was"
+
 # --check must have written nothing to the scratch destination.
 assert_equals "" "$(find "$real_dest" -mindepth 1 | sort)" \
   "the real --check wrote nothing to the theme destination"
