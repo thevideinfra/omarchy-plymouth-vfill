@@ -17,14 +17,29 @@ set -uo pipefail
 # Hardcoded on a real run. This is NOT the same situation as VFILL_THEME_DEST
 # and VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: those are read by the
 # already-elevated process, where sudo's env_reset and pkexec have long since
-# dropped them. This variable is read here, unprivileged, and it names the
+# dropped them. VFILL_RETHEME is read here, unprivileged, and it names the
 # program handed to pkexec -- so honouring it unconditionally would let the
-# environment choose what gets elevated. It is honoured only under VFILL_TEST,
-# which the tests set and nothing else does.
-if [[ -n ${VFILL_TEST:-} && -n ${VFILL_RETHEME:-} ]]; then
+# environment choose what gets elevated.
+#
+# The gate is therefore which file is running, which the environment cannot
+# forge: VFILL_RETHEME is honoured only when this script is NOT the installed
+# copy at $INSTALLED_SELF. Running the checkout's copy is how the tests reach
+# it; the installed copy ignores it however the environment is set.
+#
+# The previous gate -- honour it "only under VFILL_TEST" -- gated nothing, since
+# the environment supplied both the gate and the value it guarded, so
+# VFILL_TEST=1 VFILL_RETHEME=/evil still handed /evil to pkexec.
+#
+# Both sides are canonicalised so a symlink cannot smuggle the installed copy
+# past the comparison, and an unresolvable $0 keeps the hardcoded path: the gate
+# fails closed.
+INSTALLED_SELF=/usr/local/bin/omarchy-vfill-reboot
+RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
+
+self_path=$(readlink -f -- "$0" 2>/dev/null) || self_path=""
+installed_self=$(readlink -f -- "$INSTALLED_SELF" 2>/dev/null) || installed_self="$INSTALLED_SELF"
+if [[ -n ${VFILL_RETHEME:-} && -n $self_path && $self_path != "$installed_self" ]]; then
   RETHEME=$VFILL_RETHEME
-else
-  RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
 fi
 THEME_DIR="$HOME/.local/state/omarchy/current/theme"
 

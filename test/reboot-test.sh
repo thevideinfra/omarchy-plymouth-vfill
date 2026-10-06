@@ -4,6 +4,9 @@
 # retheme is a recording stub with a settable exit code, sudo and pkexec only
 # record what they were asked to run (they never run it), and systemctl records
 # instead of rebooting. Nothing here runs as root and no reboot can happen.
+# Nothing here executes or reads anything installed under /usr/local either: the
+# one case that has to reach that path does it inside a mount namespace with a
+# tmpfs over /usr/local, where the real one is invisible.
 #
 # The point of every case is the same: the machine must not go down unless the
 # boot splash it would come back up with is actually correct.
@@ -11,8 +14,22 @@
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/base-test.sh"
+source "$ROOT/lib/vfill.sh"
 
 REBOOT="$ROOT/bin/omarchy-vfill-reboot"
+
+command -v magick >/dev/null || fail "magick is available"
+
+# The installed-copy case needs a user+mount namespace to stand a tmpfs over
+# /usr/local. Where there is none it is skipped with a printed reason rather
+# than failing the suite -- the kernel's configuration is not this project's
+# bug -- and everything else still runs.
+SKIP_NAMESPACE=""
+if ! command -v unshare >/dev/null; then
+  SKIP_NAMESPACE="unshare is not installed"
+elif ! unshare -rm true 2>/dev/null; then
+  SKIP_NAMESPACE="unprivileged user and mount namespaces are unavailable"
+fi
 
 scratch=$(new_scratch_dir)
 trap 'rm -rf -- "$scratch"' EXIT
@@ -50,13 +67,14 @@ theme_dir="$home/.local/state/omarchy/current/theme"
 mkdir -p "$theme_dir"
 
 # Always </dev/null, so run_root takes the pkexec branch and no password
-# prompt can ever appear. VFILL_TEST is what makes VFILL_RETHEME honoured at
-# all: without it the script uses the hardcoded /usr/local path, so the
-# environment cannot choose what gets handed to pkexec.
+# prompt can ever appear. VFILL_RETHEME is honoured here only because this runs
+# the checkout's copy of the script: the installed copy ignores it, which the
+# last case in this file proves. No VFILL_TEST is set anywhere, so every case
+# below would break if the gate went back to being one the environment can set.
 run_reboot() {
   : >"$log"
-  env -u STUB_ELEVATE_EXIT -u STUB_SYSTEMCTL_EXIT -u STUB_CHECK_EXIT "$@" \
-    HOME="$home" PATH="$stubs:$PATH" VFILL_TEST=1 VFILL_RETHEME="$retheme" \
+  env -u STUB_ELEVATE_EXIT -u STUB_SYSTEMCTL_EXIT -u STUB_CHECK_EXIT -u VFILL_TEST "$@" \
+    HOME="$home" PATH="$stubs:$PATH" VFILL_RETHEME="$retheme" \
     bash "$REBOOT" </dev/null 2>&1
 }
 
@@ -141,11 +159,11 @@ real_dest="$scratch/real-dest"
 mkdir -p "$real_dest"
 
 run_reboot_real() {
-  local real_home="$1"
+  local real_home="$1" dest="${2:-$real_dest}"
   : >"$log"
-  env HOME="$real_home" PATH="$stubs:$PATH" VFILL_TEST=1 \
+  env -u VFILL_TEST HOME="$real_home" PATH="$stubs:$PATH" \
     VFILL_RETHEME="$ROOT/bin/omarchy-vfill-retheme" \
-    VFILL_THEME_DEST="$real_dest" \
+    VFILL_THEME_DEST="$dest" \
     bash "$REBOOT" </dev/null 2>&1
 }
 
@@ -186,28 +204,58 @@ pass "says there is no active Omarchy theme"
 assert_equals "" "$(find "$real_dest" -mindepth 1 | sort)" \
   "the real --check wrote nothing to the theme destination"
 
-# --- VFILL_RETHEME is ignored unless VFILL_TEST is set. -------------------
-# It is read unprivileged, before any elevation, and it names the program handed
-# to pkexec -- so the environment must not be able to choose it on a real run.
+# --- The INSTALLED copy ignores VFILL_RETHEME. ---------------------------
+# VFILL_RETHEME is read unprivileged, before any elevation, and it names the
+# program handed to pkexec, so a real run must not let the environment choose
+# it. The gate is which file is running -- the one thing the environment cannot
+# set -- so proving it means running a copy of the script AT
+# /usr/local/bin/omarchy-vfill-reboot.
+#
+# That is done inside an unprivileged user+mount namespace with a tmpfs over
+# /usr/local, so that path exists only inside the namespace: the machine's own
+# /usr/local is invisible there, nothing installed under it is read or executed,
+# and the hardcoded retheme is genuinely absent -- which is the refusal being
+# asserted. The previous version of this case ran outside any namespace and fell
+# through to the machine's installed build, passing for a different reason
+# depending on whether the project happened to be installed.
 
-: >"$log"
-output=$(env -u VFILL_TEST HOME="$home" PATH="$stubs:$PATH" VFILL_RETHEME="$retheme" \
-  bash "$REBOOT" </dev/null 2>&1)
-status=$?
-grep -q '^retheme ' "$log" &&
-  fail "VFILL_RETHEME without VFILL_TEST does not run the named program" "$(cat "$log")"
-pass "VFILL_RETHEME without VFILL_TEST does not run the named program"
-grep -qE '^(sudo|pkexec) ' "$log" &&
-  fail "VFILL_RETHEME without VFILL_TEST elevates nothing it named" "$(cat "$log")"
-pass "VFILL_RETHEME without VFILL_TEST elevates nothing it named"
-rebooted && fail "VFILL_RETHEME without VFILL_TEST does not reboot" "$(cat "$log")"
-pass "VFILL_RETHEME without VFILL_TEST does not reboot"
-[[ $status -ne 0 ]] ||
-  fail "VFILL_RETHEME without VFILL_TEST exits non-zero (scratch HOME has no theme)" "$output"
-pass "VFILL_RETHEME without VFILL_TEST exits non-zero"
-[[ $output != *"$retheme"* ]] ||
-  fail "the ignored VFILL_RETHEME path is never named in the output" "$output"
-pass "the ignored VFILL_RETHEME path is never named in the output"
+if [[ -n $SKIP_NAMESPACE ]]; then
+  printf '# skip - the installed-copy case needs unshare -rm: %s\n' "$SKIP_NAMESPACE"
+else
+  : >"$log"
+  ns_script='
+    set -uo pipefail
+    mount -t tmpfs tmpfs /usr/local || exit 64
+    install -D -m 0755 "$REBOOT_SRC" /usr/local/bin/omarchy-vfill-reboot || exit 64
+    [[ ! -e /usr/local/lib/omarchy-vfill ]] || exit 64
+    /usr/local/bin/omarchy-vfill-reboot
+  '
+  output=$(env -u VFILL_TEST HOME="$home" PATH="$stubs:$PATH" VFILL_RETHEME="$retheme" \
+    REBOOT_SRC="$REBOOT" unshare -rm /bin/bash -c "$ns_script" </dev/null 2>&1)
+  status=$?
+
+  [[ $status -ne 64 ]] ||
+    fail "the namespace stand-in for /usr/local is set up and empty" "$output"
+  pass "the namespace stand-in for /usr/local is set up and empty"
+
+  grep -q '^retheme ' "$log" &&
+    fail "the installed copy does not run the program VFILL_RETHEME names" "$(cat "$log")"
+  pass "the installed copy does not run the program VFILL_RETHEME names"
+  grep -qE '^(sudo|pkexec) ' "$log" &&
+    fail "the installed copy elevates nothing VFILL_RETHEME named" "$(cat "$log")"
+  pass "the installed copy elevates nothing VFILL_RETHEME named"
+  rebooted && fail "the installed copy does not reboot" "$(cat "$log")"
+  pass "the installed copy does not reboot"
+  [[ $status -ne 0 ]] ||
+    fail "the installed copy exits non-zero when its own retheme is absent" "$output"
+  pass "the installed copy exits non-zero when its own retheme is absent"
+  [[ $output == *"not installed: /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme"* ]] ||
+    fail "the installed copy looked for its hardcoded retheme, not VFILL_RETHEME's" "$output"
+  pass "the installed copy looked for its hardcoded retheme, not VFILL_RETHEME's"
+  [[ $output != *"$retheme"* ]] ||
+    fail "the ignored VFILL_RETHEME path is never named in the output" "$output"
+  pass "the ignored VFILL_RETHEME path is never named in the output"
+fi
 
 # --- The desktop entry points at the command and shows its progress. ------
 # The rebuild takes about 90 seconds, so Terminal=true is load-bearing: the
