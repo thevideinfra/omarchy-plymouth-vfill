@@ -140,7 +140,7 @@ pass "exits non-zero when systemctl reboot fails"
 
 # --- Nothing installed, or no active theme: refuse up front. --------------
 
-output=$(VFILL_TEST=1 VFILL_RETHEME="$scratch/not-installed" HOME="$home" PATH="$stubs:$PATH" \
+output=$(env -u VFILL_TEST VFILL_RETHEME="$scratch/not-installed" HOME="$home" PATH="$stubs:$PATH" \
   bash "$REBOOT" </dev/null 2>&1)
 status=$?
 [[ $status -ne 0 ]] || fail "exits non-zero when the retheme is not installed"
