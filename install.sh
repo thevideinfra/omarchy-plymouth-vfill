@@ -210,7 +210,8 @@ run_root /bin/bash -c '
   echo "install:   mode reboot's artefacts may already be in place, and the live" >&2
   echo "install:   Plymouth theme and the Plymouth default may already have been" >&2
   echo "install:   changed with an initramfs that does not yet match them." >&2
-  echo "install:   No theme-set hook was installed." >&2
+  echo "install:   No theme-set hook was installed or removed by this run;" >&2
+  echo "install:   one left by a previous install is still active." >&2
   echo "install:   Re-run ./install.sh to finish the job, or ./uninstall.sh to" >&2
   echo "install:   back it out; either one leaves the splash in a known state." >&2
   exit 1
