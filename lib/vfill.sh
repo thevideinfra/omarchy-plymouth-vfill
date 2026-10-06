@@ -71,6 +71,9 @@ declare -a VFILL_MAGICK_LIMITS=(
 # the environment would have run a command substitution.
 VFILL_MAX_UNLOCK_BYTES=$((8 * 1024 * 1024))
 
+# Width the logo.svg fallback is rendered at; matches the stock themes' unlock.png width.
+VFILL_FALLBACK_LOGO_WIDTH=800
+
 # Render a byte count the way the size limit is written in a message, so the
 # message cannot drift from the bound it is reporting.
 vfill_format_bytes() {
@@ -260,7 +263,7 @@ vfill_stage_theme() {
   # greyscale logo.svg fallback is rendered and flattened to the theme's
   # accent colour, or the foreground when the theme has no accent.
   if [[ $logo == *.svg ]]; then
-    magick "${VFILL_MAGICK_LIMITS[@]}" -background none "$logo" "$dest/logo.png" || return 1
+    magick "${VFILL_MAGICK_LIMITS[@]}" -background none "$logo" -resize "${VFILL_FALLBACK_LOGO_WIDTH}x" "$dest/logo.png" || return 1
     magick "${VFILL_MAGICK_LIMITS[@]}" "$dest/logo.png" -channel RGB +level-colors "#$logo_color","#$logo_color" "$dest/logo.png" || return 1
   else
     install -m 0644 "$logo" "$dest/logo.png" || return 1

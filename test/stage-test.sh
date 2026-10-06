@@ -61,7 +61,7 @@ pass "the staged marker reflects what was baked in"
 
 # A theme with no unlock.png must still stage, using the omarchy fallback.
 rm "$theme_dir/unlock.png"
-printf '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="10"><rect width="40" height="10" fill="#888"/></svg>\n' \
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="1215" height="285"><rect width="1215" height="285" fill="#888"/></svg>\n' \
   >"$omarchy_path/logo.svg"
 rm -rf "${dest:?}"/*
 vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" ||
@@ -69,6 +69,11 @@ vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" ||
 pass "staging succeeds for a theme without unlock.png"
 [[ -f $dest/logo.png ]] || fail "the fallback logo is rendered to logo.png"
 pass "the fallback logo is rendered to logo.png"
+
+assert_equals "800" "$(magick identify -format '%w' "$dest/logo.png")" \
+  "the fallback logo is 800 wide, matching stock unlock.png"
+assert_equals "188" "$(magick identify -format '%h' "$dest/logo.png")" \
+  "the fallback logo keeps its aspect ratio (188 high)"
 
 assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
   "the fallback logo is recoloured to the foreground"
