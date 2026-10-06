@@ -264,6 +264,7 @@ VFILL_MAX_UNLOCK_BYTES=""
 vfill_resolve_logo "$2" "$3"
 PROBE
 resolved=$(bash "$probe" "$ROOT" "$theme_dir" "$omarchy_path" 2>"$scratch/empty.err")
+assert_equals "0" "$?" "a bound set to the empty string does not break resolving"
 [[ $(<"$scratch/empty.err") == *"not a byte count"* ]] ||
   fail "a bound set to the empty string is still reported" "$(<"$scratch/empty.err")"
 pass "a bound set to the empty string is still reported"
