@@ -33,6 +33,10 @@ set -uo pipefail
 # Both sides are canonicalised so a symlink cannot smuggle the installed copy
 # past the comparison, and an unresolvable $0 keeps the hardcoded path: the gate
 # fails closed.
+#
+# Limit: running a copy of this script from outside /usr/local/bin bypasses the
+# gate, which is what the tests do. The only shipped invocation is the desktop
+# entry's absolute Exec, and pkexec still authenticates and names the program.
 INSTALLED_SELF=/usr/local/bin/omarchy-vfill-reboot
 RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
 
