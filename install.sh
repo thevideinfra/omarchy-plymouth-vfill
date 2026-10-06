@@ -193,11 +193,21 @@ run_root /bin/bash -c '
 
   exec "$prefix/bin/omarchy-vfill-retheme" --force --theme-dir "$theme_dir"
 ' bash "$PREFIX" "$REPO" "$THEME_DIR" "$MODE" "$REBOOT_BIN" "$DESKTOP_ENTRY" || {
+  # Everything above is honest about not knowing how far it got, because it
+  # cannot: the transaction stages the prefix, writes the mode file, settles
+  # mode reboot's artefacts and only then execs the retheme, which swaps the
+  # live theme directory in and repoints the Plymouth default BEFORE it rebuilds
+  # the initramfs and installs the marker. So a failure at the rebuild or the
+  # marker leaves the live theme already replaced. Claiming otherwise told the
+  # operator to walk away from a half-applied splash.
   echo "install: privileged install/retheme step failed." >&2
   echo "install:   Depending on how far it got, $PREFIX, the recorded mode and" >&2
-  echo "install:   mode reboot's artefacts may already be in place; re-run" >&2
-  echo "install:   ./install.sh to finish. No theme-set hook was installed, and" >&2
-  echo "install:   the live Plymouth theme was not replaced." >&2
+  echo "install:   mode reboot's artefacts may already be in place, and the live" >&2
+  echo "install:   Plymouth theme and the Plymouth default may already have been" >&2
+  echo "install:   changed with an initramfs that does not yet match them." >&2
+  echo "install:   No theme-set hook was installed." >&2
+  echo "install:   Re-run ./install.sh to finish the job, or ./uninstall.sh to" >&2
+  echo "install:   back it out; either one leaves the splash in a known state." >&2
   exit 1
 }
 

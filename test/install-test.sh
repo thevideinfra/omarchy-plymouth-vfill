@@ -262,6 +262,111 @@ pass "the failure message says what may already be in place"
   fail "the failure message says no hook was installed" "$output"
 pass "the failure message says no hook was installed"
 
+# --- The transaction's copies landed and only its retheme failed. ---------
+# STUB_ELEVATE_EXIT=1 above refuses before running anything, so it only ever
+# exercised the case where nothing happened. The interesting failure is the
+# other one: the transaction stages the prefix, writes the mode file and settles
+# mode reboot's artefacts, and only then execs the retheme -- which swaps the
+# live theme directory in and repoints the Plymouth default before it rebuilds
+# the initramfs. A rebuild or marker failure therefore exits non-zero with the
+# live theme already replaced, and the message must not say otherwise.
+#
+# Replayed as the user, not as root: the elevate stub re-runs install.sh's own
+# transaction script with scratch paths substituted for /usr/local and a repo
+# whose retheme exits 1, through an `install` shim that drops the -o/-g
+# ownership flags an unprivileged user cannot honour. No namespace is needed, so
+# this runs everywhere.
+
+partial="$scratch/partial"
+mkdir -p "$partial/stubs" "$partial/repo/bin" "$partial/repo/lib" \
+  "$partial/repo/theme" "$partial/repo/share"
+
+REAL_INSTALL=$(command -v install) || fail "install(1) is available"
+cat >"$partial/stubs/install" <<STUB
+#!/bin/bash
+# Drops -o/-g so the replay can run unprivileged; changes nothing else.
+args=()
+while ((\$# > 0)); do
+  case "\$1" in
+    -o | -g) shift 2 ;;
+    *)
+      args+=("\$1")
+      shift
+      ;;
+  esac
+done
+exec "$REAL_INSTALL" "\${args[@]}"
+STUB
+chmod +x "$partial/stubs/install"
+
+cat >"$partial/repo/bin/omarchy-vfill-retheme" <<STUB
+#!/bin/bash
+printf 'retheme %s\n' "\$*" >>"$log"
+# Stands for the real retheme failing at the initramfs rebuild or the marker --
+# after it has already swapped the live theme in and repointed the default.
+exit 1
+STUB
+chmod +x "$partial/repo/bin/omarchy-vfill-retheme"
+: >"$partial/repo/lib/vfill.sh"
+: >"$partial/repo/theme/omarchy-vfill.plymouth"
+: >"$partial/repo/theme/omarchy-vfill.script"
+cp "$ROOT/bin/omarchy-vfill-reboot" "$partial/repo/bin/omarchy-vfill-reboot"
+cp "$ROOT/share/omarchy-vfill-reboot.desktop" "$partial/repo/share/"
+
+# install.sh invokes: <elevate> /bin/bash -c <script> bash <prefix> <repo> \
+#   <theme_dir> <mode> <reboot_bin> <desktop_entry>
+for elevate in sudo pkexec; do
+  cat >"$partial/stubs/$elevate" <<STUB
+#!/bin/bash
+printf '%s\0' "\$@" >"$argv"
+exec env PATH="$partial/stubs:\$PATH" /bin/bash -c "\$3" bash \
+  "$partial/prefix" "$partial/repo" "\$7" "\$8" \
+  "$partial/reboot-bin" "$partial/entry.desktop"
+STUB
+  chmod +x "$partial/stubs/$elevate"
+done
+
+rm -f -- "$hook" "$argv"
+: >"$log"
+output=$(HOME="$home" PATH="$partial/stubs:$stubs:$PATH" \
+  bash "$ROOT/install.sh" --mode reboot </dev/null 2>&1)
+status=$?
+
+[[ $status -ne 0 ]] || fail "install fails when the transaction's retheme fails" "$output"
+pass "install fails when the transaction's retheme fails"
+assert_equals "retheme --force --theme-dir $theme_dir" "$(cat "$log")" \
+  "the replayed transaction got as far as running the retheme"
+assert_equals "reboot" "$(cat "$partial/prefix/mode")" \
+  "the mode file was already written when the retheme failed"
+[[ -x $partial/prefix/bin/omarchy-vfill-retheme ]] ||
+  fail "the prefix was already staged when the retheme failed" "$(ls -AR "$partial/prefix" 2>&1)"
+pass "the prefix was already staged when the retheme failed"
+[[ -f $partial/reboot-bin && -f $partial/entry.desktop ]] ||
+  fail "mode reboot's artefacts were already installed when the retheme failed"
+pass "mode reboot's artefacts were already installed when the retheme failed"
+[[ ! -e $hook ]] || fail "a failed transaction installs no hook"
+pass "a failed transaction installs no hook"
+
+# The message has to survive exactly this case: the live theme really may be
+# replaced by now.
+for lie in \
+  "the live Plymouth theme was not replaced" \
+  "nothing else was changed" \
+  "nothing was changed"; do
+  [[ $output != *"$lie"* ]] ||
+    fail "the failure message does not claim: $lie" "$output"
+done
+pass "the failure message claims nothing was left untouched"
+[[ $output == *"may already have been"* && $output == *"Plymouth default"* ]] ||
+  fail "the failure message says the live theme and the default may already have changed" "$output"
+pass "the failure message says the live theme and the default may already have changed"
+[[ $output == *"initramfs that does not yet match"* ]] ||
+  fail "the failure message says the initramfs may not match" "$output"
+pass "the failure message says the initramfs may not match"
+[[ $output == *"./install.sh"* && $output == *"./uninstall.sh"* ]] ||
+  fail "the failure message names both ways out" "$output"
+pass "the failure message names both ways out"
+
 # --- A failed render leaves the live hook alone. ------------------------
 # A redirection onto the hook truncates it before the render runs, so a failed
 # render used to leave an empty file behind that omarchy-hook still executes.
