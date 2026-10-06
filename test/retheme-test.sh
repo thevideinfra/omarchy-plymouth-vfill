@@ -92,6 +92,32 @@ assert_equals "0" "$status" \
   fail "--theme-dir wins over HOME: output must never mention /nonexistent" "$output"
 pass "--theme-dir wins over HOME: output never mentions /nonexistent"
 
+# --theme-dir with no value, or an empty one, is refused rather than silently
+# falling back to the invoking user's HOME: `--theme-dir "$maybe_empty"` used to
+# retheme from a directory nobody named. HOME points at nothing here, so a
+# regression cannot quietly read the real one.
+dest_opt="$scratch/dest-theme-dir-option"
+mkdir -p "$dest_opt"
+for bad in last-argument empty-value; do
+  if [[ $bad == last-argument ]]; then
+    output=$(HOME="$scratch/no-home" VFILL_THEME_DEST="$dest_opt" \
+      "$RETHEME" --check --theme-dir 2>&1)
+  else
+    output=$(HOME="$scratch/no-home" VFILL_THEME_DEST="$dest_opt" \
+      "$RETHEME" --check --theme-dir "" 2>&1)
+  fi
+  status=$?
+  [[ $status -ne 0 && $status -ne 3 ]] ||
+    fail "--theme-dir with an $bad is refused, not treated as 0 or 3" "exit $status: $output"
+  [[ $output == *"--theme-dir needs a value"* ]] ||
+    fail "--theme-dir with an $bad says the value is missing" "$output"
+  [[ $output != *"$HOME"* ]] ||
+    fail "--theme-dir with an $bad never falls back to the invoking HOME" "$output"
+done
+pass "--theme-dir with a missing or empty value is refused and says so"
+assert_equals "" "$(find "$dest_opt" -mindepth 1 | sort)" \
+  "a refused --theme-dir writes nothing to the destination"
+
 # An unknown option exits non-zero.
 dest4="$scratch/dest-unknown-option"
 mkdir -p "$dest4"

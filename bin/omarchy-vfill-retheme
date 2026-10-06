@@ -65,7 +65,19 @@ while (($# > 0)); do
   case "$1" in
     --check) CHECK_ONLY=true ;;
     --force) FORCE=true ;;
-    --theme-dir) shift; THEME_DIR_OPT="${1:-}" ;;
+    --theme-dir)
+      # Refused before shifting, the same flaw install.sh's --mode had. A
+      # missing or empty value left THEME_DIR_OPT empty, which falls through to
+      # the invoking user's $HOME below -- so `--theme-dir "$maybe_empty"`
+      # silently rethemed from a directory nobody named. The shift also failed
+      # silently at $#==0, leaving "$1" as the option itself.
+      if (($# < 2)) || [[ -z $2 ]]; then
+        echo "omarchy-vfill-retheme: --theme-dir needs a value" >&2
+        exit 1
+      fi
+      THEME_DIR_OPT="$2"
+      shift
+      ;;
     *) echo "omarchy-vfill-retheme: unknown option: $1" >&2; exit 1 ;;
   esac
   shift
