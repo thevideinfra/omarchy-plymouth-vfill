@@ -575,10 +575,16 @@ done
 pass "only the word yes in full chooses mode auto"
 
 rm -f -- "$hook" "$argv"
-output=$(run_install $'\n')
+# The "yes" is there so that an empty answer falling through to option 4 could
+# not be rescued by the confirmation reaching end-of-stdin: if Enter ever
+# reached mode auto, this input would select it.
+output=$(run_install $'\nyes\n')
 load_root_argv
 assert_equals "theme-set" "${RECORDED[7]}" \
   "pressing Enter at the prompt takes theme-set, never mode auto"
+[[ $output != *"Any process running as you"* ]] ||
+  fail "pressing Enter never even offers mode auto's consent" "$output"
+pass "pressing Enter never even offers mode auto's consent"
 
 rm -f -- "$hook" "$argv"
 output=$(run_install $'4\nyes\n')
