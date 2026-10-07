@@ -251,14 +251,24 @@ check_rule_path() {
 # every argument approved too, --theme-dir among them. It also said the worst case
 # was "not a privilege leak", which is not this installer's to promise -- what the
 # rule is worth rests entirely on the retheme being correct.
+#
+# It then said "the rule approves the program and the whole command line, and the
+# program is root-owned, so neither is yours to change", and the second half of
+# that was false: the command line IS the caller's to choose. What is true, and
+# what matters to someone deciding whether to install the rule, is that choosing
+# any other one stops matching the rule and falls back to a password prompt.
 auto_consent() {
   echo "  Mode auto installs $POLKIT_RULE, which means:"
   echo "    - Any process running as you, in an active local session, may run"
   echo "      $PREFIX/bin/omarchy-vfill-retheme as root"
   echo "      with no prompt -- that exact command and no arguments. The rule"
-  echo "      approves the program and the whole command line, and the program is"
-  echo "      root-owned, so neither is yours to change. Run with no arguments it"
-  echo "      recolours the splash from your own current Omarchy theme."
+  echo "      approves the program and the whole command line, so any other command"
+  echo "      line -- the same program with any argument at all -- stops matching the"
+  echo "      rule and falls back to a password prompt. The command line is yours to"
+  echo "      choose; what it buys you without a password is only this one. The"
+  echo "      program itself is root-owned, so what runs under that approval is not"
+  echo "      yours to change. Run with no arguments it recolours the splash from"
+  echo "      your own current Omarchy theme."
   echo "    - It can therefore trigger unlimited initramfs rebuilds: disk and CPU"
   echo "      churn."
   echo "    - It writes the boot image; the current image survives until a rebuild"

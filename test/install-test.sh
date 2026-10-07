@@ -739,6 +739,7 @@ for line in \
   "Any process running as you, in an active local session, may run" \
   "that exact command and no arguments" \
   "approves the program and the whole command line" \
+  "falls back to a password prompt" \
   "unlimited initramfs rebuilds" \
   "the current image survives until a rebuild" \
   "only as safe as that one script is correct" \
@@ -752,10 +753,15 @@ pass "the consent text states the whole trade-off before asking"
 # and "not a privilege leak" is not this installer's promise to make: what the
 # rule is worth rests on the retheme being correct, which the text now says
 # instead.
+#
+# "neither is yours to change" was the last one: the program is not the caller's
+# to change, but the command line is -- choosing another one is exactly what
+# falls back to a password prompt, which is what the text says now.
 for lie in \
   "That one program only" \
   "not a privilege leak" \
-  "cannot be changed by you"; do
+  "cannot be changed by you" \
+  "neither is yours to change"; do
   [[ $output != *"$lie"* ]] ||
     fail "the consent text does not claim: $lie" "$output"
 done

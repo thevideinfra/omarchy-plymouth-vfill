@@ -88,10 +88,13 @@ you notice the splash is stale.
 - Any process running as you, in an active local session, may run
   `/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme` as root with no
   prompt — that exact command and no arguments. The rule requires both the
-  program and the whole command line to be that one path, and the program is
-  root-owned, so neither is yours to change. Run with no arguments it recolours
-  the splash from your own current Omarchy theme, which it finds from the home
-  directory in your passwd entry.
+  program and the whole command line to be that one path, so any other command
+  line — the same program with any argument at all — stops matching the rule and
+  falls back to a password prompt. The command line is yours to choose; what it
+  buys you without a password is only this one. The program itself is root-owned,
+  so what runs under that approval is not yours to change. Run with no arguments
+  it recolours the splash from your own current Omarchy theme, which it finds from
+  the home directory in your passwd entry.
 - It can therefore trigger unlimited initramfs rebuilds: disk and CPU churn.
 - It writes the boot image; the current image survives until a rebuild succeeds.
 - Remove it with `./uninstall.sh`, or by switching to another mode.
