@@ -34,4 +34,16 @@ esac
 command -v omarchy-notification-send >/dev/null &&
   omarchy-notification-send "Boot splash" "Recolouring for the new theme" 2>/dev/null
 
-pkexec "$RETHEME" --theme-dir "$THEME_DIR"
+# Deliberately no arguments. Mode auto's polkit rule approves exactly this one
+# argument-free invocation and nothing else, because --theme-dir names the
+# directory root reads colours and artwork from: approving it would have let any
+# local wheel process publish artwork of its own choosing into the boot image
+# with no prompt. The retheme resolves the invoking user's theme itself, from
+# the home directory in PKEXEC_UID's passwd entry.
+#
+# So this escalation and the --check above can disagree in one case: a session
+# whose HOME is not the passwd home. --check would then look at $THEME_DIR while
+# the retheme looks at the passwd home's theme. The retheme is the one that
+# publishes, so the splash still follows the passwd home's theme; the only cost
+# is a --check that can ask for work there is none of, or miss work there is.
+pkexec "$RETHEME"

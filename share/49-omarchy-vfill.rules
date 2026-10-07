@@ -2,12 +2,32 @@
 //
 // Installed only by install mode `auto`, from inside install.sh's single
 // privileged transaction, and removed again by every other mode and by
-// uninstall.sh. The program path below must name the installed retheme
-// exactly; install.sh refuses to install this file if it does not, because a
-// stale path here would grant passwordless root to the wrong program.
+// uninstall.sh. install.sh compares this file byte for byte against the rule it
+// ships before letting root install it: the program path below has to name the
+// installed retheme exactly, because a stale path here would grant passwordless
+// root to the wrong program, and an edited rule could widen what is approved.
+//
+// Both the program and the whole command line are required to be that one path,
+// so only the bare, argument-free invocation is passwordless. The program check
+// on its own approved every argument the retheme accepts as well -- including
+// `--theme-dir <path>`, which names the directory root reads colors.toml and
+// unlock.png from. Any local active wheel process could therefore have had root
+// publish colours and artwork of its own choosing into the live Plymouth theme
+// and the next initramfs, with no prompt, which is more than the consent text
+// promises. The theme-set hook consequently passes no arguments at all and lets
+// the retheme resolve the invoking user's theme from PKEXEC_UID.
+//
+// pkexec's manual says not to use command_line for security checks, because it
+// is argv joined with single spaces and so cannot be taken apart again. This
+// rule never takes it apart: it compares it for equality with a string that
+// contains no space, and only a single-word argv -- the argument-free
+// invocation -- can produce that. `program`, which pkexec resolves itself,
+// stays the authoritative check on *what* runs; command_line narrows it to one
+// invocation of it.
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.policykit.exec" &&
       action.lookup("program") == "/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme" &&
+      action.lookup("command_line") == "/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme" &&
       subject.isInLocalSession() && subject.active && subject.isInGroup("wheel")) {
     return polkit.Result.YES;
   }

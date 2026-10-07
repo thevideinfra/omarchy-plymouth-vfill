@@ -502,6 +502,13 @@ for want in \
 done
 pass "the shipped rule yields only for an active local wheel session"
 
+# ...and exactly one invocation of it. Pinning only the program approved every
+# argument the retheme accepts too, --theme-dir among them, which names the
+# directory root reads colors.toml and unlock.png from.
+grep -qF "action.lookup(\"command_line\") == \"$PREFIX/bin/omarchy-vfill-retheme\"" "$RULE_SRC" ||
+  fail "the shipped rule approves only the argument-free command line" "$(cat "$RULE_SRC")"
+pass "the shipped rule approves only the argument-free command line"
+
 # --- --mode auto on its own is refused. ---------------------------------
 # No script should be able to turn the password prompt off by passing a mode
 # along; it takes a second, explicit flag.
@@ -545,6 +552,12 @@ pass "mode auto installs the theme-set hook"
 grep -qF "$PREFIX/bin/omarchy-vfill-retheme" "$hook" ||
   fail "mode auto's hook points at the installed root-owned retheme" "$(cat "$hook")"
 pass "mode auto's hook points at the installed root-owned retheme"
+# The rule approves the bare invocation only, so the installed hook must escalate
+# with no arguments -- otherwise mode auto prompts for a password at every theme
+# change, which is the one thing it promises not to do.
+grep -qE '^pkexec "\$RETHEME"$' "$hook" ||
+  fail "mode auto's hook escalates with no arguments" "$(grep -n pkexec "$hook")"
+pass "mode auto's hook escalates with no arguments"
 # The rule is root-owned, so only the privileged transaction may write it; the
 # unprivileged half must not have produced it itself.
 [[ ! -e $rule ]] ||

@@ -83,6 +83,15 @@ assert_equals "0" "$?" "the hook succeeds when a retheme is needed"
 escalated || fail "the hook escalates when --check exits 0" "$(cat "$log")"
 pass "the hook escalates when --check exits 0"
 
+# The privileged call passes NO arguments. Mode auto's polkit rule approves that
+# one bare invocation and nothing else, because --theme-dir names the directory
+# root reads colours and artwork from -- approving it let any local wheel process
+# have root publish artwork of its choosing into the boot image with no prompt.
+# The unprivileged --check keeps --theme-dir: it needs no rule and no privilege.
+assert_equals "retheme --check --theme-dir $hook_home/.local/state/omarchy/current/theme
+pkexec $stub_retheme" "$(cat "$log")" \
+  "the hook escalates with no arguments at all, and only --check names a theme directory"
+
 # 3 means already current: nothing to do, nothing said.
 output=$(run_hook 3)
 assert_equals "0" "$?" "the hook succeeds when the splash is already current"
