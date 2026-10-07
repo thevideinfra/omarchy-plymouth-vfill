@@ -540,6 +540,9 @@ case "$MODE" in
     echo "install:   updates the splash when the theme's colours change, asking for your"
     echo "install:   password and rebuilding the initramfs (about 90 seconds) when it does."
     echo "install:   A theme change that alters nothing it bakes in costs nothing at all."
+    echo "install:   The escalated half passes no arguments, so it recolours from the theme"
+    echo "install:   under the home directory in your passwd entry, not from \$HOME -- the"
+    echo "install:   two differ only in a session whose HOME was changed."
     ;;
   reboot)
     echo "install: mode: before reboot. Nothing happens on a theme change; choose"

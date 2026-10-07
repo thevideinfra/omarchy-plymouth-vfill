@@ -70,6 +70,14 @@ bakes in costs nothing — no prompt, no rebuild. If that check cannot read the
 theme at all, the hook says so and does nothing, rather than treating a broken
 theme as one that needs no work.
 
+The hook's escalated half passes no arguments at all, in `theme-set` as well as
+in `auto`: mode `auto`'s polkit rule approves only the argument-free invocation,
+and the hook is the same file in both modes. So the recolour always follows the
+theme under the home directory in your passwd entry, not `$HOME`. The two differ
+only in a session whose `HOME` was changed, where the `--check` that decides
+whether to escalate looks at `$HOME` while the recolour that follows looks at the
+passwd home.
+
 `reboot` only reboots if the update succeeded; if it failed or you cancelled the
 password prompt, it says so and the machine stays up. It runs in a terminal so
 you can watch the rebuild.

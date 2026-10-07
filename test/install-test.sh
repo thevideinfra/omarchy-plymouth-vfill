@@ -312,6 +312,18 @@ for pair in \
 done
 pass "every mode states how the splash is updated and names the manual command"
 
+# Mode theme-set's summary says which theme the escalated recolour follows. The
+# hook passes no arguments -- mode auto's rule approves only the argument-free
+# invocation, and it is the same hook file in both modes -- so the retheme
+# resolves the theme from the home directory in the passwd entry, not from $HOME.
+# The hook itself documented that; the mode summary the operator actually reads
+# did not.
+rm -f -- "$hook"
+output=$(run_install "" --mode theme-set)
+[[ $output == *"passwd entry"* ]] ||
+  fail "mode theme-set says the escalated recolour follows the passwd home" "$output"
+pass "mode theme-set says the escalated recolour follows the passwd home, not \$HOME"
+
 # --- A failed privileged step installs no hook and says so. -------------
 
 rm -f -- "$hook"
