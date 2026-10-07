@@ -280,3 +280,108 @@ pass "prerequisite: the run hashed something at all"
 grep -qF "$theme_dir/unlock.png" "$sha_log" &&
   fail "a privileged run never hashes the theme's own unlock.png path" "$(cat "$sha_log")"
 pass "a privileged run never hashes the theme's own unlock.png path"
+
+# --- A colors.toml that cannot be read without blocking does not wedge root. ---
+# The colour reads happen after the lock is taken, six times per run, on a path
+# the user controls. sed's open of a FIFO with no writer never returns, so an
+# unbounded read left root holding /run/lock/omarchy-vfill.lock forever and every
+# later retheme -- and the whole of uninstall.sh's privileged transaction -- queued
+# behind it. The read is bounded instead, so this is a refusal: the run fails, the
+# lock is released, and nothing is published.
+#
+# The run goes through an OUTER timeout as well, and a status of 124 from it is
+# itself a failure, because it would mean the bound was the test's and not the
+# retheme's.
+fifo_theme="$scratch/theme-colors-fifo"
+mkdir -p "$fifo_theme"
+mkfifo "$fifo_theme/colors.toml"
+cp "$theme_dir/unlock.png" "$fifo_theme/unlock.png"
+
+dest_fifo="$scratch/dest-colors-fifo"
+: >"$log"
+start=$SECONDS
+timeout -k 2 25 env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_fifo" VFILL_LOCK_FILE="$scratch/lock" \
+  VFILL_OPEN_TIMEOUT=2 \
+  unshare -r "$RETHEME" --theme-dir "$fifo_theme" >/dev/null 2>&1
+status=$?
+elapsed=$((SECONDS - start))
+
+[[ $status -ne 0 ]] || fail "a run whose colors.toml is a FIFO fails rather than publishing"
+pass "a run whose colors.toml is a FIFO fails rather than publishing"
+[[ $status -ne 124 ]] ||
+  fail "the FIFO refusal is the retheme's own bound, not the test's outer timeout" \
+    "the run did not return within the outer 25 s: it is still holding $scratch/lock"
+pass "the FIFO refusal is the retheme's own bound, not the test's outer timeout"
+((elapsed < 20)) ||
+  fail "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT" "took ${elapsed}s with a 2 s bound"
+pass "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT"
+[[ ! -e $dest_fifo ]] ||
+  fail "a run whose colors.toml is a FIFO publishes nothing" "$(ls -A "$dest_fifo" 2>&1)"
+pass "a run whose colors.toml is a FIFO publishes nothing"
+assert_equals "" "$(stub_calls)" \
+  "a run whose colors.toml is a FIFO sets no default and rebuilds nothing"
+flock -n "$scratch/lock" true ||
+  fail "the bounded refusal released the retheme lock" \
+    "the lock is still held, so every later retheme and uninstall.sh would block on it"
+pass "the bounded refusal released the retheme lock"
+
+# A FIFO in the staging reads is bounded too: vfill_stage_theme reads colors.toml
+# three more times, after the publish has begun. The run above never reaches them,
+# so this one lets the script's own reads succeed and makes the staging reads block
+# instead -- the swap is performed by a mktemp stub at the moment the staging
+# directory is created, which is exactly where a racing process would strike.
+swap_fifo_theme="$scratch/theme-colors-fifo-swapped"
+mkdir -p "$swap_fifo_theme"
+cp "$theme_dir/colors.toml" "$swap_fifo_theme/colors.toml"
+cp "$theme_dir/unlock.png" "$swap_fifo_theme/unlock.png"
+
+cat >"$stubs/mktemp" <<STUB
+#!/bin/bash
+# Stands in for a process racing the retheme: it replaces colors.toml with a FIFO
+# at the instant the staging directory is created, i.e. after the script's own
+# three reads and immediately before vfill_stage_theme's three.
+if [[ "\$*" == *-d* ]]; then
+  rm -f -- "$swap_fifo_theme/colors.toml"
+  mkfifo "$swap_fifo_theme/colors.toml"
+fi
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$stubs/mktemp"
+
+dest_fifo_swap="$scratch/dest-colors-fifo-swapped"
+: >"$log"
+start=$SECONDS
+timeout -k 2 25 env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_fifo_swap" VFILL_LOCK_FILE="$scratch/lock" \
+  VFILL_OPEN_TIMEOUT=2 \
+  unshare -r "$RETHEME" --theme-dir "$swap_fifo_theme" >/dev/null 2>&1
+status=$?
+elapsed=$((SECONDS - start))
+rm -f -- "$stubs/mktemp"
+
+[[ -p $swap_fifo_theme/colors.toml ]] ||
+  fail "prerequisite: colors.toml really was swapped to a FIFO during the run"
+pass "prerequisite: colors.toml really was swapped to a FIFO during the run"
+[[ $status -ne 0 ]] ||
+  fail "a colors.toml swapped to a FIFO mid-run fails rather than publishing"
+pass "a colors.toml swapped to a FIFO mid-run fails rather than publishing"
+[[ $status -ne 124 ]] ||
+  fail "the staging reads are bounded by the retheme, not by the test's outer timeout" \
+    "the run did not return within the outer 25 s: it is still holding $scratch/lock"
+pass "the staging reads are bounded by the retheme, not by the test's outer timeout"
+((elapsed < 20)) ||
+  fail "the staging reads are bounded by VFILL_OPEN_TIMEOUT" "took ${elapsed}s with a 2 s bound"
+pass "the staging reads are bounded by VFILL_OPEN_TIMEOUT"
+[[ ! -e $dest_fifo_swap ]] ||
+  fail "a colors.toml swapped to a FIFO mid-run publishes nothing" \
+    "$(ls -A "$dest_fifo_swap" 2>&1)"
+pass "a colors.toml swapped to a FIFO mid-run publishes nothing"
+assert_equals "" "$(stub_calls)" \
+  "a colors.toml swapped to a FIFO mid-run sets no default and rebuilds nothing"
+flock -n "$scratch/lock" true ||
+  fail "the bounded staging refusal released the retheme lock" \
+    "the lock is still held, so every later retheme and uninstall.sh would block on it"
+pass "the bounded staging refusal released the retheme lock"

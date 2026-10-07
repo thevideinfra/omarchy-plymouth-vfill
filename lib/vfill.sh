@@ -5,14 +5,76 @@
 # is pure: it reads what it is given and prints a result, so the logic can be
 # tested without root and without touching a real Plymouth theme.
 
+# The one bound root's reads of user-controlled paths run under, and the one
+# mechanism that applies it.
+#
+# Why a bound at all. open(2) on a FIFO with no writer blocks until a writer
+# arrives, which may be never, and bash has no redirection that opens with
+# O_NONBLOCK. The privileged retheme reads the theme while it holds
+# /run/lock/omarchy-vfill.lock, so a path swapped to a FIFO in the window after
+# an [[ -f ]] test wedged root there: every later retheme and the whole of
+# uninstall.sh's privileged transaction then waited on a lock nobody would ever
+# release. Running the reader in a child under timeout turns that wedge into a
+# bounded refusal.
+#
+# A missing timeout(1) is a refusal, not a licence to read unbounded: reading
+# unbounded is the thing this exists to prevent.
+#
+# VFILL_OPEN_TIMEOUT is overridable only so the tests need not wait out the real
+# bound, exactly like VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: it is read
+# inside the already-elevated process, where sudo's env_reset and pkexec have
+# dropped it. It is validated before it reaches timeout's argv, so a value that
+# is not a plain number of seconds falls back rather than making the bound
+# whatever it says. 20 s is the -limit time the magick calls already use.
+#
+# -k 1: TERM is enough for a process blocked in open(2), but a reader that
+# ignores it must still go.
+#
+# $1 names the path for the refusal message; everything after it is the command.
+vfill_run_bounded() {
+  local what="$1"
+  shift
+  local secs
+
+  command -v timeout >/dev/null || {
+    printf 'vfill: timeout(1) is not available, so %s cannot be read under a bound; refusing\n' \
+      "$what" >&2
+    return 1
+  }
+
+  secs=${VFILL_OPEN_TIMEOUT:-20}
+  [[ $secs =~ ^[1-9][0-9]*$ ]] || secs=20
+
+  timeout -k 1 "$secs" "$@"
+}
+
 # Read a colour key out of an Omarchy colors.toml. The match is anchored so
 # dark_background and lighter_background cannot satisfy a lookup for background.
+#
+# Root runs this six times per retheme -- three in bin/omarchy-vfill-retheme,
+# three more inside vfill_stage_theme -- after the lock is taken, on a path the
+# user controls. sed's open of a FIFO with no writer never returns, so the read
+# goes through vfill_run_bounded, the same bound vfill_copy_user_file puts around
+# the logo open.
+#
+# The pre-check is -e and deliberately NOT -f. A regular-file test here would be
+# a TOCTOU check that defends nothing -- the file can become a FIFO in the window
+# between the test and sed's open -- while making the FIFO case look handled
+# instead of bounded. The bound is what defends; -e survives only so a theme with
+# no colors.toml at all returns quietly rather than through sed's stderr.
+#
+# A bound is the whole requirement here, and there is deliberately no inode
+# ownership check: root legitimately reads a colors.toml it does not own, nothing
+# read is ever published, and what is returned is already constrained to six hex
+# digits by the expression below.
 vfill_read_color() {
   local toml="$1" key="$2" value
 
-  [[ -f $toml ]] || return 1
+  [[ -e $toml ]] || return 1
 
-  value=$(sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"?#?([0-9a-fA-F]{6})\"?[[:space:]]*\$/\\1/p" "$toml" | head -1)
+  value=$(vfill_run_bounded "$toml" \
+    sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"?#?([0-9a-fA-F]{6})\"?[[:space:]]*\$/\\1/p" \
+    "$toml" | head -1)
 
   [[ -n $value ]] || return 1
   printf '%s\n' "$value"
@@ -355,6 +417,13 @@ vfill_open_user_file() {
 # A value that does not exist yet is accepted, deliberately: install.sh's "this
 # polkit has no rules.d" refusal has to be reachable from the tests, and a
 # missing directory under a scratch prefix is how they reach it.
+#
+# The scratch prefix is checked exactly once, here, in the unprivileged half, so
+# a component of the path it returns can still be swapped before root writes
+# through it -- this gate bounds which directories an operator can ask for, not
+# what the inode is at write time. That residual is accepted: reaching it needs
+# VFILL_TEST_POLKIT_RULES_DIR set as well, the write is destructive-only, and the
+# rule's bytes are cmp-pinned before root is asked to install them.
 VFILL_POLKIT_RULES_DIR_DEFAULT=/etc/polkit-1/rules.d
 VFILL_POLKIT_RULE_NAME=49-omarchy-vfill.rules
 
@@ -396,15 +465,12 @@ vfill_polkit_rules_dir() {
 # Why a child process. Bash has no redirection that opens with O_NONBLOCK, so
 # `exec {fd}<"$path"` on a FIFO blocks in open(2) for as long as there is no
 # writer -- and a signal does not break it out, bash just restarts the open
-# (measured, not assumed). The privileged retheme reaches here holding
-# /run/lock/omarchy-vfill.lock, so an unlock.png swapped to a FIFO in the window
-# after vfill_resolve_logo's -f test wedged root there: every later retheme and
-# the whole of uninstall.sh's transaction then waited on a lock nobody would ever
-# release. `exec {fd}<>"$path"` does not block, but O_RDWR brings O_CREAT with it:
-# on a dangling symlink root would create the target -- /etc/nologin, say -- and
-# it would leave root holding a write descriptor on user-controlled content. So
-# the open runs in a child under `timeout`, which turns a wedge into a bounded
-# refusal.
+# (measured, not assumed). `exec {fd}<>"$path"` does not block, but O_RDWR brings
+# O_CREAT with it: on a dangling symlink root would create the target --
+# /etc/nologin, say -- and it would leave root holding a write descriptor on
+# user-controlled content. So the open runs in a child, under the shared bound in
+# vfill_run_bounded, which turns a wedge into a bounded refusal; that function
+# has the rest of the reasoning and owns VFILL_OPEN_TIMEOUT.
 #
 # The child holds the descriptor, so the bytes reach the caller as $dest rather
 # than as a descriptor number -- which keeps the property the descriptor was for:
@@ -418,29 +484,14 @@ vfill_polkit_rules_dir() {
 # truncated or empty file for a verified copy.
 vfill_copy_user_file() {
   local path="$1" uid="$2" dest="$3"
-  local lib fd_capture timeout_secs status
+  local lib fd_capture status
 
   lib=${BASH_SOURCE[0]}
   [[ -f $lib ]] || return 1
 
-  command -v timeout >/dev/null || {
-    printf 'vfill: timeout(1) is not available, so %s cannot be opened under a bound; refusing\n' \
-      "$path" >&2
-    return 1
-  }
-
-  # Overridable only so the tests need not wait out the real bound, exactly like
-  # VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: this is read inside the
-  # already-elevated process, where sudo's env_reset and pkexec have dropped it.
-  # Validated before it reaches timeout's argv, so a value that is not a plain
-  # number of seconds falls back rather than making the bound whatever it says.
-  # 20 s is the -limit time the magick calls already use.
-  timeout_secs=${VFILL_OPEN_TIMEOUT:-20}
-  [[ $timeout_secs =~ ^[1-9][0-9]*$ ]] || timeout_secs=20
-
   fd_capture=$(mktemp) || return 1
 
-  timeout -k 1 "$timeout_secs" bash -c '
+  vfill_run_bounded "$path" bash -c '
     set -uo pipefail
     source "$1" || exit 1
     vfill_open_user_file "$2" "$3" >"$4" || exit 1
