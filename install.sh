@@ -227,16 +227,27 @@ check_rule_path() {
   return 0
 }
 
+# What the rule actually approves, and nothing more. This used to say "that one
+# program only -- it is root-owned, so what the rule approves cannot be changed
+# by you", which claimed more than the rule did: pinning the program alone left
+# every argument approved too, --theme-dir among them. It also said the worst case
+# was "not a privilege leak", which is not this installer's to promise -- what the
+# rule is worth rests entirely on the retheme being correct.
 auto_consent() {
   echo "  Mode auto installs $POLKIT_RULE, which means:"
   echo "    - Any process running as you, in an active local session, may run"
   echo "      $PREFIX/bin/omarchy-vfill-retheme as root"
-  echo "      with no prompt. That one program only -- it is root-owned, so what the"
-  echo "      rule approves cannot be changed by you."
+  echo "      with no prompt -- that exact command and no arguments. The rule"
+  echo "      approves the program and the whole command line, and the program is"
+  echo "      root-owned, so neither is yours to change. Run with no arguments it"
+  echo "      recolours the splash from your own current Omarchy theme."
   echo "    - It can therefore trigger unlimited initramfs rebuilds: disk and CPU"
-  echo "      churn, not a privilege leak."
+  echo "      churn."
   echo "    - It writes the boot image; the current image survives until a rebuild"
   echo "      succeeds."
+  echo "    - Mode auto is only as safe as that one script is correct. Every bug in"
+  echo "      it -- anything it would run, write or trust -- becomes a bug that runs"
+  echo "      as root without anyone being asked first."
   echo "    - Remove it with ./uninstall.sh, or by switching to another mode."
 }
 
@@ -248,8 +259,8 @@ if [[ $MODE == auto ]]; then
     echo "install:   It installs a polkit rule that lets any process running as you, in" >&2
     echo "install:   an active local session, run this as root with no prompt:" >&2
     echo "install:     $PREFIX/bin/omarchy-vfill-retheme" >&2
-    echo "install:   That one root-owned program only, which can then rebuild the" >&2
-    echo "install:   initramfs as often as it likes." >&2
+    echo "install:   That one root-owned program, with no arguments, which can then" >&2
+    echo "install:   rebuild the initramfs as often as it likes." >&2
     echo "install:   If that is what you want, say so explicitly:" >&2
     echo "install:     ./install.sh --mode auto --i-understand" >&2
     exit 1
@@ -500,8 +511,9 @@ case "$MODE" in
     echo "install:   updates the splash when the theme's colours change, and $POLKIT_RULE"
     echo "install:   lets it do that without asking: any process running as you, in an active"
     echo "install:   local session, may run $PREFIX/bin/omarchy-vfill-retheme"
-    echo "install:   as root with no prompt -- that one root-owned program only. Rebuilding"
-    echo "install:   still takes about 90 seconds; you just will not be asked first."
+    echo "install:   as root with no prompt -- that one root-owned program, with no"
+    echo "install:   arguments. Rebuilding still takes about 90 seconds; you just will not"
+    echo "install:   be asked first. Mode auto is only as safe as that script is correct."
     echo "install:   Remove the rule with ./uninstall.sh, or by re-installing in another mode."
     ;;
 esac

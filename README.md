@@ -62,7 +62,7 @@ previous mode's artefacts.
 | `theme-set` | A hook at `~/.config/omarchy/hooks/theme-set.d/omarchy-vfill.sh`, whenever the theme's colours change | An authentication prompt and a ~90 s rebuild at each theme change that actually alters the splash |
 | `reboot` | The **Plymouth vfill reboot** launcher entry, or `/usr/local/bin/omarchy-vfill-reboot` | Nothing until you reboot, and the reboot takes ~90 s longer when the theme changed |
 | `manual` | Nothing; you run the command below | Nothing, until you forget |
-| `auto` | The same hook as `theme-set` | No prompt and no ~90 s wait you have to sit through — paid for with a polkit rule that gives one program passwordless root |
+| `auto` | The same hook as `theme-set` | No prompt and no ~90 s wait you have to sit through — paid for with a polkit rule that gives one command passwordless root |
 
 `theme-set` is the default. Its hook checks first with `--check`, which needs no
 privileges and writes nothing, so a theme change that alters nothing the splash
@@ -83,22 +83,31 @@ you notice the splash is stale.
 
 `auto` installs the same hook as `theme-set`, plus
 `/etc/polkit-1/rules.d/49-omarchy-vfill.rules` (root-owned, 0644), which lets
-`pkexec` run one exact program without authenticating. In plain terms:
+`pkexec` run one exact command without authenticating. In plain terms:
 
 - Any process running as you, in an active local session, may run
   `/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme` as root with no
-  prompt. That one program only — it is root-owned, so what the rule approves
-  cannot be changed by you.
-- It can therefore trigger unlimited initramfs rebuilds: disk and CPU churn, not
-  a privilege leak.
+  prompt — that exact command and no arguments. The rule requires both the
+  program and the whole command line to be that one path, and the program is
+  root-owned, so neither is yours to change. Run with no arguments it recolours
+  the splash from your own current Omarchy theme, which it finds from the home
+  directory in your passwd entry.
+- It can therefore trigger unlimited initramfs rebuilds: disk and CPU churn.
 - It writes the boot image; the current image survives until a rebuild succeeds.
 - Remove it with `./uninstall.sh`, or by switching to another mode.
 
-The last point is the one worth sitting with: what keeps this safe is that one
-script being correct. The rule grants root to
-`omarchy-vfill-retheme` and nothing else, so every bug in that script — anything
-it would run, write or trust — becomes a bug that runs as root without anyone
-being asked first. If you are not willing to make that bet on this project's
+The arguments matter, which is why they are not approved. `--theme-dir <path>`
+names the directory the retheme reads `colors.toml` and `unlock.png` from; a rule
+that approved it would let any process running as you have root publish colours
+and artwork of its choosing into the live theme and the next initramfs, with no
+prompt. So the hook escalates with no arguments at all, and `install.sh`'s own
+call and `omarchy-vfill-reboot` — both of which do pass arguments — stop matching
+the rule and authenticate as they always did.
+
+What keeps this safe, in the end, is that one script being correct. The rule
+grants root to one invocation of `omarchy-vfill-retheme` and nothing else, so
+every bug in that script — anything it would run, write or trust — becomes a bug
+that runs as root without anyone being asked first. If you are not willing to make that bet on this project's
 code, use `theme-set`, which does exactly the same work and asks you each time.
 
 `auto` is never the default and never reachable by pressing Enter: interactively
@@ -106,8 +115,8 @@ it is option 4 and you have to type `yes` in full; non-interactively it needs
 `--mode auto --i-understand`. The installer refuses it outright when the rule
 could not work anyway — no `polkitd`, no `/etc/polkit-1/rules.d` (polkit older
 than 0.106), or an invoking user who is not in group `wheel` — and refuses it
-when the shipped rule's program path does not match the retheme being installed,
-rather than granting passwordless root to the wrong path.
+when the shipped rule is not byte for byte the rule `install.sh` expects, rather
+than granting passwordless root to whatever it actually says.
 
 ### The manual command
 
@@ -151,8 +160,8 @@ It removes `/usr/local/lib/omarchy-vfill/`, the `omarchy-vfill` theme, and
 whichever mode's artefacts are present — the theme-set hook,
 `/usr/local/bin/omarchy-vfill-reboot` and its desktop entry, and
 `/etc/polkit-1/rules.d/49-omarchy-vfill.rules` — then rebuilds the initramfs.
-The polkit rule goes whether or not it was ever installed, so no mode leaves
-passwordless root behind.
+The polkit rule is removed from `/etc/polkit-1/rules.d` whether or not it was
+ever installed there, so no mode leaves passwordless root behind.
 
 ## Requirements
 

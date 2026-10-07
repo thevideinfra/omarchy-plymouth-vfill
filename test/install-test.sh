@@ -598,6 +598,9 @@ pass "the refusal names the flag that would enable it"
 [[ $output == *"no prompt"* ]] ||
   fail "the refusal says what the rule would allow" "$output"
 pass "the refusal says what the rule would allow"
+[[ $output == *"with no arguments"* ]] ||
+  fail "the refusal says only the argument-free invocation would be allowed" "$output"
+pass "the refusal says only the argument-free invocation would be allowed"
 
 # --- --mode auto --i-understand installs the hook and the rule. ----------
 
@@ -635,6 +638,12 @@ pass "mode auto names the rule it installed"
 [[ $output == *"with no prompt"* ]] ||
   fail "mode auto says what the rule allows without a prompt" "$output"
 pass "mode auto says what the rule allows without a prompt"
+[[ $output == *"with no"*"arguments"* ]] ||
+  fail "mode auto says the rule allows the argument-free invocation only" "$output"
+pass "mode auto says the rule allows the argument-free invocation only"
+[[ $output == *"only as safe as that script is correct"* ]] ||
+  fail "mode auto states the standing liability" "$output"
+pass "mode auto states the standing liability"
 [[ $output == *"$MANUAL_COMMAND"* ]] ||
   fail "mode auto names the always-available manual command" "$output"
 pass "mode auto names the always-available manual command"
@@ -676,13 +685,29 @@ pass "mode auto chosen interactively installs the hook"
 
 for line in \
   "Any process running as you, in an active local session, may run" \
-  "That one program only" \
+  "that exact command and no arguments" \
+  "approves the program and the whole command line" \
   "unlimited initramfs rebuilds" \
   "the current image survives until a rebuild" \
+  "only as safe as that one script is correct" \
   "Remove it with ./uninstall.sh"; do
   [[ $output == *"$line"* ]] || fail "the consent text says: $line" "$output"
 done
 pass "the consent text states the whole trade-off before asking"
+
+# ...and claims no more than the rule delivers. "That one program only" implied the
+# rule constrained the arguments, which it did not until it checked command_line,
+# and "not a privilege leak" is not this installer's promise to make: what the
+# rule is worth rests on the retheme being correct, which the text now says
+# instead.
+for lie in \
+  "That one program only" \
+  "not a privilege leak" \
+  "cannot be changed by you"; do
+  [[ $output != *"$lie"* ]] ||
+    fail "the consent text does not claim: $lie" "$output"
+done
+pass "the consent text claims nothing the rule does not deliver"
 
 # --- Mode auto is refused where the rule could never work. ---------------
 
