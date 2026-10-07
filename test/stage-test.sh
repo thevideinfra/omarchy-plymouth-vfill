@@ -112,3 +112,30 @@ pass "staging succeeds when an explicit fifth-argument logo is given"
 
 assert_equals "DFEDE5" "$(pixel_hex "$dest/logo.png")" \
   "the fifth-argument logo (the svg fallback) wins over the theme's own unlock.png"
+
+# A sixth argument says where the logo's BYTES come from, while the fifth still
+# names the logo. That is what lets the privileged retheme stage, publish and hash
+# a verified copy of the theme's unlock.png without root ever opening the user's
+# path again -- to copy it or to hash it for the marker. The two files here are
+# deliberately different, so staging from the path instead of the copy is visible.
+copy_src="$scratch/verified-copy.png"
+magick -size 40x10 xc:"#8BE9FD" -alpha set "$copy_src"
+assert_equals "FFFFFF" "$(pixel_hex "$theme_dir/unlock.png")" \
+  "prerequisite: the theme's own unlock.png is white"
+assert_equals "8BE9FD" "$(pixel_hex "$copy_src")" \
+  "prerequisite: the stand-in verified copy is not"
+
+rm -rf "${dest:?}"/*
+vfill_stage_theme "$ROOT" "$dest" "$theme_dir" "$omarchy_path" \
+  "$theme_dir/unlock.png" "$copy_src" ||
+  fail "staging succeeds with a separate content file"
+pass "staging succeeds with a separate content file"
+
+assert_equals "8BE9FD" "$(pixel_hex "$dest/logo.png")" \
+  "the staged logo is the bytes of the sixth argument, not of the logo path"
+assert_equals "$theme_dir/unlock.png" \
+  "$(sed -nE 's/^logo_source=(.*)$/\1/p' "$dest/.vfill-marker")" \
+  "the marker still records the logo path as its source"
+assert_equals "$(sha256sum "$copy_src" | cut -d' ' -f1)" \
+  "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest/.vfill-marker")" \
+  "the marker hashes the sixth argument, so root never re-reads the path to hash it"

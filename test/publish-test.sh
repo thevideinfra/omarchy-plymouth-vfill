@@ -97,6 +97,13 @@ assert_equals "$(sha256sum <"$dest/logo.png" | cut -d' ' -f1)" \
   "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest/.vfill-marker")" \
   "the marker hashes the published logo bytes"
 
+# The theme's own unlock.png is published as-is -- and, since root reads it once
+# into a verified copy and stages, publishes and hashes that copy rather than
+# re-reading the path, those bytes are the ones that were checked.
+cmp -s "$theme_dir/unlock.png" "$dest/logo.png" ||
+  fail "the published logo is byte-for-byte the theme's unlock.png"
+pass "the published logo is byte-for-byte the theme's unlock.png"
+
 # --- A matching marker short-circuits; --force restages anyway. ------------
 
 : >"$log"
@@ -178,3 +185,98 @@ wait "$waiter"
 assert_equals "0" "$?" "the waiting run completes once the lock is released"
 [[ -f $dest_lock/.vfill-marker ]] || fail "the waiting run publishes after the lock is released"
 pass "the waiting run publishes after the lock is released"
+
+# --- The bytes published are the bytes that were checked, even when the theme's
+#     unlock.png changes underneath. ------------------------------------------
+# The retheme opens the theme's unlock.png once, checks the inode it actually
+# opened, and stages, publishes and hashes that copy. Nothing re-reads the path
+# afterwards -- which is what makes a racing swap after the check harmless, and
+# the same reason root never blocks on a path swapped to a FIFO while it holds the
+# lock.
+#
+# The swap is performed by a mktemp stub at the moment the retheme asks for its
+# staging directory: after the verified copy, immediately before staging, which is
+# exactly where a racing process would strike.
+
+swap_theme="$scratch/theme-swapped"
+mkdir -p "$swap_theme"
+cp "$theme_dir/colors.toml" "$swap_theme/colors.toml"
+magick -size 40x10 xc:white -alpha set "$swap_theme/unlock.png"
+original_logo_sha=$(sha256sum "$swap_theme/unlock.png" | cut -d' ' -f1)
+
+swapped="$scratch/swapped-bytes.png"
+magick -size 40x10 xc:"#FF0000" -alpha set "$swapped"
+swapped_sha=$(sha256sum "$swapped" | cut -d' ' -f1)
+[[ $original_logo_sha != "$swapped_sha" ]] ||
+  fail "prerequisite: the swapped artwork differs from the original"
+pass "prerequisite: the swapped artwork differs from the original"
+
+REAL_MKTEMP=$(command -v mktemp) || fail "mktemp is available"
+cat >"$stubs/mktemp" <<STUB
+#!/bin/bash
+# Stands in for a process racing the retheme: it replaces the theme's artwork at
+# the instant the staging directory is created, i.e. after the retheme has taken
+# its verified copy.
+if [[ "\$*" == *-d* ]]; then
+  cp -- "$swapped" "$swap_theme/unlock.png"
+fi
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$stubs/mktemp"
+
+dest_swap="$scratch/dest-swapped"
+: >"$log"
+env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_swap" VFILL_LOCK_FILE="$scratch/lock" \
+  unshare -r "$RETHEME" --theme-dir "$swap_theme" >/dev/null 2>&1
+assert_equals "0" "$?" "a run whose artwork is swapped mid-run still succeeds"
+
+assert_equals "$swapped_sha" "$(sha256sum "$swap_theme/unlock.png" | cut -d' ' -f1)" \
+  "prerequisite: the swap really happened during the run"
+assert_equals "$original_logo_sha" "$(sha256sum "$dest_swap/logo.png" | cut -d' ' -f1)" \
+  "the published logo is the bytes that were checked, not the ones swapped in after"
+assert_equals "$original_logo_sha" \
+  "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest_swap/.vfill-marker")" \
+  "the marker hashes the bytes that were checked, not a fresh read of the path"
+
+rm -f -- "$stubs/mktemp"
+
+# --- A privileged run never hashes the theme's own path. -------------------
+# Everything root reads the artwork for -- the marker comparison that decides
+# whether to republish, and the marker it writes afterwards -- reads the verified
+# copy. Hashing the path instead would be root opening user-controlled content
+# (blocking, if it has become a FIFO, while it holds the lock) and would put the
+# digest of whatever was swapped in since into a world-readable marker.
+#
+# A stale marker is in place so the comparison really does reach the hash: with no
+# marker at all it returns before hashing anything.
+hash_dest="$scratch/dest-hash-source"
+mkdir -p "$hash_dest"
+vfill_write_marker "$hash_dest/.vfill-marker" "000000" "DFEDE5" \
+  "$theme_dir/unlock.png" "DFEDE5"
+
+REAL_SHA256SUM=$(command -v sha256sum) || fail "sha256sum is available"
+sha_log="$scratch/sha256sum.log"
+: >"$sha_log"
+cat >"$stubs/sha256sum" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >>"$sha_log"
+exec "$REAL_SHA256SUM" "\$@"
+STUB
+chmod +x "$stubs/sha256sum"
+
+: >"$log"
+env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$hash_dest" VFILL_LOCK_FILE="$scratch/lock" \
+  unshare -r "$RETHEME" --theme-dir "$theme_dir" >/dev/null 2>&1
+assert_equals "0" "$?" "a run against a stale marker republishes and succeeds"
+rm -f -- "$stubs/sha256sum"
+
+[[ -s $sha_log ]] ||
+  fail "prerequisite: the run hashed something, so the assertion below means something"
+pass "prerequisite: the run hashed something at all"
+grep -qF "$theme_dir/unlock.png" "$sha_log" &&
+  fail "a privileged run never hashes the theme's own unlock.png path" "$(cat "$sha_log")"
+pass "a privileged run never hashes the theme's own unlock.png path"

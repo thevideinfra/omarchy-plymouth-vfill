@@ -141,7 +141,52 @@ logo=$(vfill_resolve_logo "$CURRENT_THEME" "$OMARCHY_PATH") || {
   exit 1
 }
 
-if ! $FORCE && vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color"; then
+# From here on root never reads the theme's own artwork through its path: not to
+# hash it for the marker comparison below, not to stage it, and not to publish it.
+# It is opened once, under a bound, and checked by inode; everything downstream
+# reads the copy that open produced.
+#
+# The trusted $OMARCHY_PATH/logo.svg fallback is package-owned system content and
+# is exempt, and --check neither publishes nor holds the lock, so it reads the
+# path as it always did.
+if [[ -n ${PKEXEC_UID:-} ]]; then
+  invoking_uid=$PKEXEC_UID
+elif [[ -n ${SUDO_UID:-} ]]; then
+  invoking_uid=$SUDO_UID
+else
+  invoking_uid=$(id -u)
+fi
+
+logo_copy=""
+staging=""
+new_dest=""
+
+cleanup() {
+  [[ -n $logo_copy ]] && rm -f -- "$logo_copy"
+  [[ -n $staging ]] && rm -rf -- "$staging"
+  [[ -n $new_dest ]] && rm -rf -- "$new_dest"
+  return 0
+}
+trap cleanup EXIT
+
+if ! $CHECK_ONLY && [[ $logo != "$OMARCHY_PATH/logo.svg" ]]; then
+  # The theme-provided unlock.png is user-controlled content that
+  # omarchy-theme-set copies with cp -r, which preserves symlinks. The copy is
+  # taken from a descriptor whose inode has to be a regular file owned by the
+  # invoking user, so a symlink to a root-owned file (e.g. /etc/shadow) is refused
+  # rather than published world-readable into the initramfs -- and a FIFO is
+  # refused instead of blocking root here with the lock held.
+  logo_copy=$(mktemp) || {
+    echo "omarchy-vfill-retheme: failed to create a temporary file" >&2
+    exit 1
+  }
+  vfill_copy_user_file "$logo" "$invoking_uid" "$logo_copy" || {
+    echo "omarchy-vfill-retheme: refusing to publish $logo: not a regular file owned by uid $invoking_uid, or not readable without blocking" >&2
+    exit 1
+  }
+fi
+
+if ! $FORCE && vfill_marker_matches "$THEME_DEST/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" "${logo_copy:-$logo}"; then
   # 3, not 1: every error above exits 1 or 2, so a caller can tell "already
   # current" from "this theme is broken" and refuse to act on the latter.
   $CHECK_ONLY && exit 3
@@ -159,74 +204,22 @@ rebuild=$(vfill_initramfs_command) || {
   exit 1
 }
 
-if [[ -n ${PKEXEC_UID:-} ]]; then
-  invoking_uid=$PKEXEC_UID
-elif [[ -n ${SUDO_UID:-} ]]; then
-  invoking_uid=$SUDO_UID
-else
-  invoking_uid=$(id -u)
-fi
-
-# The theme-provided unlock.png is user-controlled content that
-# omarchy-theme-set copies with cp -r, which preserves symlinks. Open it as
-# the invoking user's file before staging and require the OPENED inode -- not
-# the path -- to be a regular file that user owns, so a symlink to a
-# root-owned file (e.g. /etc/shadow) is refused rather than published
-# world-readable into the initramfs. The trusted $OMARCHY_PATH/logo.svg
-# fallback is package-owned system content and is exempt.
-logo_fd=""
-if [[ $logo != "$OMARCHY_PATH/logo.svg" ]]; then
-  logo_fd_capture=$(mktemp)
-  if vfill_open_user_file "$logo" "$invoking_uid" >"$logo_fd_capture"; then
-    logo_fd=$(<"$logo_fd_capture")
-  else
-    rm -f "$logo_fd_capture"
-    echo "omarchy-vfill-retheme: refusing to publish $logo: not a regular file owned by uid $invoking_uid" >&2
-    exit 1
-  fi
-  rm -f "$logo_fd_capture"
-fi
-
-staging=$(mktemp -d)
-new_dest=""
-
-cleanup() {
-  [[ -n $logo_fd ]] && exec {logo_fd}<&- 2>/dev/null
-  rm -rf -- "$staging"
-  [[ -n $new_dest ]] && rm -rf -- "$new_dest"
-}
-trap cleanup EXIT
-
-# Pass the already-resolved $logo through rather than letting
-# vfill_stage_theme resolve it again: a second lookup would leave a TOCTOU
-# window between this script's resolution (and, for unlock.png, its
-# ownership check above) and the copy staging performs.
-vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" "$logo" || {
-  echo "omarchy-vfill-retheme: staging failed" >&2
+staging=$(mktemp -d) || {
+  echo "omarchy-vfill-retheme: failed to create a staging directory" >&2
   exit 1
 }
 
-# Overwrite the staged logo with exactly the bytes read from the verified
-# descriptor, so the bytes published are the ones that were checked, not a
-# fresh read of the path that could have been swapped after the check.
-if [[ -n $logo_fd ]]; then
-  cat <&"$logo_fd" >"$staging/logo.png" || {
-    echo "omarchy-vfill-retheme: failed to read the verified logo" >&2
-    exit 1
-  }
-  exec {logo_fd}<&-
-  logo_fd=""
-
-  # Hash the bytes just copied from the verified descriptor, never the path:
-  # root re-reading the path could hash a file swapped in since the check and
-  # put a root-only file's digest into the world-readable marker. Unchanged
-  # artwork gives the same digest as --check's hash of the path, so the theme
-  # still reads as current afterwards.
-  vfill_write_marker "$staging/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" "$staging/logo.png" || {
-    echo "omarchy-vfill-retheme: failed to write the marker" >&2
-    exit 1
-  }
-fi
+# Pass the already-resolved $logo through rather than letting vfill_stage_theme
+# resolve it again: a second lookup would leave a TOCTOU window between this
+# script's resolution and the copy staging performs. The sixth argument is where
+# the bytes come from -- the verified copy for an unlock.png -- so the bytes
+# staged, published and hashed into the marker are the ones that were checked,
+# and root never opens the user's path a second time.
+vfill_stage_theme "$REPO" "$staging" "$CURRENT_THEME" "$OMARCHY_PATH" "$logo" \
+  "${logo_copy:-$logo}" || {
+  echo "omarchy-vfill-retheme: staging failed" >&2
+  exit 1
+}
 
 # Publish atomically: build the new theme directory next to the live one,
 # verify every file lands, then swap it into place with a rename. A failure

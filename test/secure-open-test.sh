@@ -98,3 +98,77 @@ open_capture "$dir" "$my_uid" &&
 pass "a directory is refused"
 after=$(fd_count)
 assert_equals "$before" "$after" "a refused directory leaks no descriptor"
+
+# --- vfill_copy_user_file: the same check, and no blocking open. ------------
+# Root reaches this while it holds /run/lock/omarchy-vfill.lock, so an unlock.png
+# swapped to a FIFO must not block it there: `exec {fd}<` on a FIFO waits for a
+# writer forever, and bash restarts the open through signals. Every call here goes
+# through an OUTER timeout as well, so a regression cannot hang the suite -- and a
+# status of 124 from that outer timeout is itself a failure, because it means the
+# refusal was the test's doing and not the function's.
+copy_under_outer_timeout() {
+  local path="$1" uid="$2" dest="$3"
+  timeout 15 bash -c '
+    source "$1" || exit 1
+    VFILL_OPEN_TIMEOUT=2 vfill_copy_user_file "$2" "$3" "$4"
+  ' bash "$ROOT/lib/vfill.sh" "$path" "$uid" "$dest" 2>/dev/null
+}
+
+copy_dest="$scratch/copied-logo"
+
+copy_under_outer_timeout "$regular" "$my_uid" "$copy_dest"
+assert_equals "0" "$?" "a regular file owned by the current uid is copied"
+cmp -s "$regular" "$copy_dest" ||
+  fail "the copy is byte-for-byte the verified file" "$(cat "$copy_dest")"
+pass "the copy is byte-for-byte the verified file"
+
+rm -f "$copy_dest"
+copy_under_outer_timeout "$link" "$my_uid" "$copy_dest"
+[[ $? -ne 0 ]] || fail "a symlink to a root-owned file is refused for the copy too"
+pass "a symlink to a root-owned file is refused for the copy too"
+[[ ! -e $copy_dest ]] ||
+  fail "a refused copy leaves no destination file behind" "$(ls -l "$copy_dest")"
+pass "a refused copy leaves no destination file behind"
+
+rm -f "$copy_dest"
+copy_under_outer_timeout "$scratch/does-not-exist" "$my_uid" "$copy_dest"
+[[ $? -ne 0 ]] || fail "a non-existent path is refused for the copy too"
+pass "a non-existent path is refused for the copy too"
+
+# The one this exists for: a FIFO. It must be refused, the refusal must come from
+# the function's own bound rather than the outer timeout, and it must not have
+# taken anything like as long as an unbounded open would (which is forever).
+fifo="$scratch/unlock-as-a-fifo"
+mkfifo "$fifo"
+rm -f "$copy_dest"
+start=$SECONDS
+copy_under_outer_timeout "$fifo" "$my_uid" "$copy_dest"
+status=$?
+elapsed=$((SECONDS - start))
+
+[[ $status -ne 0 ]] || fail "a FIFO is refused rather than copied"
+pass "a FIFO is refused rather than copied"
+[[ $status -ne 124 ]] ||
+  fail "the FIFO refusal is the function's own bound, not the test's outer timeout" \
+    "the call did not return within the outer 15 s: an unbounded open would hold the retheme lock here forever"
+pass "the FIFO refusal is the function's own bound, not the test's outer timeout"
+((elapsed < 10)) ||
+  fail "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT" "took ${elapsed}s with a 2 s bound"
+pass "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT"
+[[ ! -e $copy_dest ]] ||
+  fail "a refused FIFO leaves no destination file behind" "$(ls -l "$copy_dest")"
+pass "a refused FIFO leaves no destination file behind"
+
+# A directory is refused here too -- opening one for reading succeeds on Linux,
+# so only the descriptor's own [[ -f ]] catches it.
+rm -f "$copy_dest"
+copy_under_outer_timeout "$dir" "$my_uid" "$copy_dest"
+[[ $? -ne 0 ]] || fail "a directory is refused for the copy too"
+pass "a directory is refused for the copy too"
+
+# A file owned by somebody else is refused even though it is a regular file and
+# opens instantly: the uid check is still the one that matters.
+rm -f "$copy_dest"
+copy_under_outer_timeout /etc/hostname "$my_uid" "$copy_dest"
+[[ $? -ne 0 ]] || fail "a root-owned regular file is refused for the copy too"
+pass "a root-owned regular file is refused for the copy too"

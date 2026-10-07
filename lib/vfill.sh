@@ -179,12 +179,21 @@ vfill_logo_hash() {
 
 # Hash the logo as well as its path: re-theming can leave the path identical
 # while replacing the artwork underneath it.
+#
+# The optional sixth argument is the file whose bytes are hashed, the same shape
+# as vfill_write_marker's. A privileged caller passes the verified copy it took of
+# the theme's unlock.png: hashing the path instead would have root open
+# user-controlled content, which is a blocking open on a FIFO while it holds the
+# retheme lock, and a hash of whatever was swapped in since the check. The copy is
+# byte-identical to the source, so an unprivileged --check hashing the path still
+# agrees with the marker a privileged run wrote.
 vfill_marker_matches() {
   local marker="$1" background="$2" foreground="$3" logo="$4" logo_color="$5"
+  local hash_from="${6:-$4}"
   local want_hash
 
   [[ -f $marker ]] || return 1
-  want_hash=$(vfill_logo_hash "$logo") || return 1
+  want_hash=$(vfill_logo_hash "$hash_from") || return 1
 
   local have_background have_foreground have_logo have_logo_color have_hash
   have_background=$(sed -nE 's/^background=(.*)$/\1/p' "$marker")
@@ -227,8 +236,15 @@ vfill_initramfs_command() {
 # racing process could swap in an unlock.png between the caller's resolution
 # and this function's own lookup. When omitted, this resolves the logo itself,
 # exactly as before.
+#
+# The optional sixth argument is the file the logo's BYTES are read from, when
+# that is not the logo path itself. A privileged caller passes the verified copy
+# it took: the fifth argument still names the logo, so the marker records the real
+# source and the .svg fallback is still recognised by name, but root never opens
+# the user's path again -- not to copy it, and not to hash it for the marker.
 vfill_stage_theme() {
   local repo="$1" dest="$2" theme_dir="$3" omarchy_path="$4" logo_override="${5:-}"
+  local logo_content="${6:-}"
   local background foreground logo_color logo floats
 
   background=$(vfill_read_color "$theme_dir/colors.toml" background) || return 1
@@ -239,6 +255,7 @@ vfill_stage_theme() {
   else
     logo=$(vfill_resolve_logo "$theme_dir" "$omarchy_path") || return 1
   fi
+  [[ -n $logo_content ]] || logo_content="$logo"
   floats=$(vfill_hex_to_floats "$background") || return 1
 
   mkdir -p "$dest" || return 1
@@ -263,13 +280,13 @@ vfill_stage_theme() {
   # greyscale logo.svg fallback is rendered and flattened to the theme's
   # accent colour, or the foreground when the theme has no accent.
   if [[ $logo == *.svg ]]; then
-    magick "${VFILL_MAGICK_LIMITS[@]}" -background none "$logo" -resize "${VFILL_FALLBACK_LOGO_WIDTH}x" "$dest/logo.png" || return 1
+    magick "${VFILL_MAGICK_LIMITS[@]}" -background none "$logo_content" -resize "${VFILL_FALLBACK_LOGO_WIDTH}x" "$dest/logo.png" || return 1
     magick "${VFILL_MAGICK_LIMITS[@]}" "$dest/logo.png" -channel RGB +level-colors "#$logo_color","#$logo_color" "$dest/logo.png" || return 1
   else
-    install -m 0644 "$logo" "$dest/logo.png" || return 1
+    install -m 0644 "$logo_content" "$dest/logo.png" || return 1
   fi
 
-  vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" || return 1
+  vfill_write_marker "$dest/.vfill-marker" "$background" "$foreground" "$logo" "$logo_color" "$logo_content" || return 1
 }
 
 # Open a file for reading and confirm the inode actually opened is a regular file
@@ -370,6 +387,76 @@ vfill_polkit_rules_dir() {
   printf 'vfill: refusing VFILL_POLKIT_RULES_DIR=%s: even with VFILL_TEST_POLKIT_RULES_DIR set it may only name a scratch directory under /tmp, /var/tmp or /dev/shm\n' \
     "$requested" >&2
   return 1
+}
+
+# Copy a file the invoking user owns into $dest, reading only from a descriptor
+# whose inode has been checked, and without letting a file that is not a regular
+# file block root while it holds the retheme lock.
+#
+# Why a child process. Bash has no redirection that opens with O_NONBLOCK, so
+# `exec {fd}<"$path"` on a FIFO blocks in open(2) for as long as there is no
+# writer -- and a signal does not break it out, bash just restarts the open
+# (measured, not assumed). The privileged retheme reaches here holding
+# /run/lock/omarchy-vfill.lock, so an unlock.png swapped to a FIFO in the window
+# after vfill_resolve_logo's -f test wedged root there: every later retheme and
+# the whole of uninstall.sh's transaction then waited on a lock nobody would ever
+# release. `exec {fd}<>"$path"` does not block, but O_RDWR brings O_CREAT with it:
+# on a dangling symlink root would create the target -- /etc/nologin, say -- and
+# it would leave root holding a write descriptor on user-controlled content. So
+# the open runs in a child under `timeout`, which turns a wedge into a bounded
+# refusal.
+#
+# The child holds the descriptor, so the bytes reach the caller as $dest rather
+# than as a descriptor number -- which keeps the property the descriptor was for:
+# what lands in $dest is what was read from the checked inode, never a fresh read
+# of a path that could have been swapped since. The check itself is
+# vfill_open_user_file, unchanged, called as a plain foreground command inside the
+# child because command substitution would open the descriptor in a subshell that
+# then exits and closes it.
+#
+# $dest is removed when this returns non-zero, so a caller cannot mistake a
+# truncated or empty file for a verified copy.
+vfill_copy_user_file() {
+  local path="$1" uid="$2" dest="$3"
+  local lib fd_capture timeout_secs status
+
+  lib=${BASH_SOURCE[0]}
+  [[ -f $lib ]] || return 1
+
+  command -v timeout >/dev/null || {
+    printf 'vfill: timeout(1) is not available, so %s cannot be opened under a bound; refusing\n' \
+      "$path" >&2
+    return 1
+  }
+
+  # Overridable only so the tests need not wait out the real bound, exactly like
+  # VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: this is read inside the
+  # already-elevated process, where sudo's env_reset and pkexec have dropped it.
+  # Validated before it reaches timeout's argv, so a value that is not a plain
+  # number of seconds falls back rather than making the bound whatever it says.
+  # 20 s is the -limit time the magick calls already use.
+  timeout_secs=${VFILL_OPEN_TIMEOUT:-20}
+  [[ $timeout_secs =~ ^[1-9][0-9]*$ ]] || timeout_secs=20
+
+  fd_capture=$(mktemp) || return 1
+
+  timeout -k 1 "$timeout_secs" bash -c '
+    set -uo pipefail
+    source "$1" || exit 1
+    vfill_open_user_file "$2" "$3" >"$4" || exit 1
+    fd=$(<"$4")
+    cat <&"$fd"
+  ' bash "$lib" "$path" "$uid" "$fd_capture" >"$dest"
+  status=$?
+
+  rm -f -- "$fd_capture"
+
+  if ((status != 0)); then
+    rm -f -- "$dest"
+    return 1
+  fi
+
+  return 0
 }
 
 # Render the theme-set hook, pointing it at the installed root-owned retheme
