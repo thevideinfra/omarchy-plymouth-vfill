@@ -44,23 +44,25 @@ THEME_DIR="$HOME/.local/state/omarchy/current/theme"
 # that transaction against scratch paths.
 REBOOT_BIN=/usr/local/bin/omarchy-vfill-reboot
 DESKTOP_ENTRY=/usr/local/share/applications/omarchy-vfill-reboot.desktop
-# Mode auto's polkit rule. Overridable only so the tests can point it at a
-# scratch directory instead of the real /etc/polkit-1/rules.d, exactly like
-# VFILL_THEME_DEST in bin/omarchy-vfill-retheme.
-#
-# This is not the VFILL_RETHEME situation in bin/omarchy-vfill-reboot, which
-# had to be gated: that variable named the program handed to pkexec, so
-# honouring it would have let the environment choose what gets elevated. This
-# one names a file the transaction writes with content from the checkout, in a
-# script that only ever runs unprivileged from the checkout and then asks the
-# user to authenticate -- so an override here grants whoever set it nothing
-# they could not get by editing this file.
-POLKIT_RULES_DIR=${VFILL_POLKIT_RULES_DIR:-/etc/polkit-1/rules.d}
-POLKIT_RULE_NAME=49-omarchy-vfill.rules
-POLKIT_RULE="$POLKIT_RULES_DIR/$POLKIT_RULE_NAME"
-POLKIT_RULE_SRC="$REPO/share/$POLKIT_RULE_NAME"
 
 source "$REPO/lib/vfill.sh"
+
+# Mode auto's polkit rule. VFILL_POLKIT_RULES_DIR is read here, unprivileged,
+# and then handed into the root transaction as an argv word -- which is exactly
+# how it got past the env scrubbing that makes VFILL_THEME_DEST harmless, so it
+# is gated rather than honoured. vfill_polkit_rules_dir has the whole argument;
+# everything it does not allow ends the install here, before anything is
+# inspected or changed.
+POLKIT_RULE_NAME=$VFILL_POLKIT_RULE_NAME
+POLKIT_RULES_DIR=$(vfill_polkit_rules_dir) || {
+  echo "install: nothing was changed." >&2
+  exit 1
+}
+POLKIT_RULE="$POLKIT_RULES_DIR/$POLKIT_RULE_NAME"
+# Removed by every mode other than auto whatever the override says, so a stale
+# override in the environment can never be the only path a mode switch cleans up.
+POLKIT_RULE_DEFAULT="$VFILL_POLKIT_RULES_DIR_DEFAULT/$POLKIT_RULE_NAME"
+POLKIT_RULE_SRC="$REPO/share/$POLKIT_RULE_NAME"
 
 MODE=""
 # Mode auto is the one mode that cannot be chosen by accident: non-interactively
@@ -150,19 +152,75 @@ refuse_auto() {
   echo "install:   password when the colours change." >&2
 }
 
-# The rule approves one exact program. If the shipped file names anything other
-# than the retheme this installer installs, installing it would grant
-# passwordless root to some other path, so refuse instead of guessing.
+# The rule this installer is prepared to hand root, byte for byte. The file in
+# the checkout is still the only thing the transaction copies -- this is a
+# comparison baseline, never a source -- and test/install-test.sh asserts the two
+# are identical, so changing one without the other is a failing test.
+polkit_rule_expected() {
+  cat <<'RULE'
+// /etc/polkit-1/rules.d/49-omarchy-vfill.rules, root:root 0644
+//
+// Installed only by install mode `auto`, from inside install.sh's single
+// privileged transaction, and removed again by every other mode and by
+// uninstall.sh. install.sh compares this file byte for byte against the rule it
+// ships before letting root install it: the program path below has to name the
+// installed retheme exactly, because a stale path here would grant passwordless
+// root to the wrong program, and an edited rule could widen what is approved.
+//
+// Both the program and the whole command line are required to be that one path,
+// so only the bare, argument-free invocation is passwordless. The program check
+// on its own approved every argument the retheme accepts as well -- including
+// `--theme-dir <path>`, which names the directory root reads colors.toml and
+// unlock.png from. Any local active wheel process could therefore have had root
+// publish colours and artwork of its own choosing into the live Plymouth theme
+// and the next initramfs, with no prompt, which is more than the consent text
+// promises. The theme-set hook consequently passes no arguments at all and lets
+// the retheme resolve the invoking user's theme from PKEXEC_UID.
+//
+// pkexec's manual says not to use command_line for security checks, because it
+// is argv joined with single spaces and so cannot be taken apart again. This
+// rule never takes it apart: it compares it for equality with a string that
+// contains no space, and only a single-word argv -- the argument-free
+// invocation -- can produce that. `program`, which pkexec resolves itself,
+// stays the authoritative check on *what* runs; command_line narrows it to one
+// invocation of it.
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.policykit.exec" &&
+      action.lookup("program") == "/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme" &&
+      action.lookup("command_line") == "/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme" &&
+      subject.isInLocalSession() && subject.active && subject.isInGroup("wheel")) {
+    return polkit.Result.YES;
+  }
+});
+RULE
+}
+
+# The rule grants passwordless root, so what root installs has to be this exact
+# rule -- not merely a file that mentions the right program somewhere.
+#
+# The previous check was a grep for the program string anywhere in the file, which
+# is a typo guard and not a tamper guard: any file that named the retheme in a
+# comment passed, so a crafted rules file was enough to have root write whatever
+# that file contained. Together with a crafted VFILL_POLKIT_RULES_DIR (now gated)
+# that meant root writing an attacker's drop-in into a directory of their choice.
+#
+# The limit, stated plainly: whoever can edit share/49-omarchy-vfill.rules can
+# usually edit this file too. This guards a rules file that drifted, was patched
+# downstream, or was swapped on its own -- not an attacker who owns the checkout.
 check_rule_path() {
   [[ -f $POLKIT_RULE_SRC ]] || {
     echo "install: $POLKIT_RULE_SRC is missing; mode auto cannot be installed" >&2
     return 1
   }
 
-  grep -qF "\"$PREFIX/bin/omarchy-vfill-retheme\"" "$POLKIT_RULE_SRC" || {
-    echo "install: $POLKIT_RULE_SRC does not name \"$PREFIX/bin/omarchy-vfill-retheme\"" >&2
-    echo "install:   The rule has to name the program it approves exactly, or it would" >&2
-    echo "install:   grant passwordless root to a different path. Refusing to install it." >&2
+  polkit_rule_expected | cmp -s - "$POLKIT_RULE_SRC" || {
+    echo "install: $POLKIT_RULE_SRC is not the rule this installer approves" >&2
+    echo "install:   It is compared byte for byte against the rule written out in" >&2
+    echo "install:   install.sh, which grants passwordless root to" >&2
+    echo "install:   \"$PREFIX/bin/omarchy-vfill-retheme\" with no arguments and" >&2
+    echo "install:   nothing else. An edited, stale or patched rule is refused rather" >&2
+    echo "install:   than installed, because installing it would grant passwordless root" >&2
+    echo "install:   to whatever it actually says. Refusing to install it." >&2
     return 1
   }
 
@@ -316,7 +374,7 @@ echo "install: staging the theme into $PREFIX and applying it (requires root)"
 run_root /bin/bash -c '
   set -euo pipefail
   prefix="$1" repo="$2" theme_dir="$3" mode="$4" reboot_bin="$5" desktop_entry="$6"
-  polkit_rule="$7"
+  polkit_rule="$7" polkit_rule_default="$8"
 
   install -d -m 0755 -o root -g root "$prefix" "$prefix/bin" "$prefix/lib" "$prefix/theme"
   install -m 0755 -o root -g root "$repo/bin/omarchy-vfill-retheme" "$prefix/bin/omarchy-vfill-retheme"
@@ -349,12 +407,16 @@ run_root /bin/bash -c '
     # old to have it is too old to read the rule.
     install -m 0644 -o root -g root "$repo/share/49-omarchy-vfill.rules" "$polkit_rule"
   else
-    rm -f -- "$polkit_rule"
+    # Both paths, always. Removing only the overridden one meant a single line in
+    # a shell profile could leave a mode switch away from auto with passwordless
+    # root still installed at the default path. Removing a file that is not there
+    # is free, and the two are the same path on every real run.
+    rm -f -- "$polkit_rule" "$polkit_rule_default"
   fi
 
   exec "$prefix/bin/omarchy-vfill-retheme" --force --theme-dir "$theme_dir"
 ' bash "$PREFIX" "$REPO" "$THEME_DIR" "$MODE" "$REBOOT_BIN" "$DESKTOP_ENTRY" \
-  "$POLKIT_RULE" || {
+  "$POLKIT_RULE" "$POLKIT_RULE_DEFAULT" || {
   # Everything above is honest about not knowing how far it got, because it
   # cannot: the transaction stages the prefix, writes the mode file, settles
   # mode reboot's artefacts and only then execs the retheme, which swaps the

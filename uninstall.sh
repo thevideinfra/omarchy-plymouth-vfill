@@ -26,12 +26,6 @@ PREFIX=/usr/local/lib/omarchy-vfill
 # scratch paths.
 REBOOT_BIN=/usr/local/bin/omarchy-vfill-reboot
 DESKTOP_ENTRY=/usr/local/share/applications/omarchy-vfill-reboot.desktop
-# Mode auto's polkit rule, removed whether or not it is there -- as with every
-# other artefact, the recorded mode is not consulted. Overridable only so the
-# tests can point it at a scratch directory instead of the real
-# /etc/polkit-1/rules.d, exactly like VFILL_THEME_DEST in
-# bin/omarchy-vfill-retheme; see the same note in install.sh.
-POLKIT_RULE=${VFILL_POLKIT_RULES_DIR:-/etc/polkit-1/rules.d}/49-omarchy-vfill.rules
 # The same lock bin/omarchy-vfill-retheme takes, so an uninstall never
 # interleaves with a retheme still publishing or rebuilding.
 LOCK_FILE=/run/lock/omarchy-vfill.lock
@@ -46,6 +40,27 @@ HOOK_DEST="$HOOK_DIR/omarchy-vfill.sh"
 HOOK_STAGED="$HOME/.config/omarchy/hooks/omarchy-vfill.sh.uninstalling"
 
 source "$REPO/lib/vfill.sh"
+
+# Mode auto's polkit rule, removed whether or not it is there -- as with every
+# other artefact, the recorded mode is not consulted.
+#
+# Unlike VFILL_THEME_DEST, which bin/omarchy-vfill-retheme reads inside the
+# already-elevated process where sudo's env_reset and pkexec have dropped it,
+# VFILL_POLKIT_RULES_DIR is read here, unprivileged, and handed into the root
+# transaction as an argv word -- so it reached root past that scrubbing. It
+# therefore goes through the same gate install.sh uses, and an override that the
+# gate refuses is ignored rather than fatal: a shell profile with a stale value
+# in it must never be able to make an uninstall exit leaving passwordless root
+# installed. The default path below is removed either way.
+POLKIT_RULE_DEFAULT="$VFILL_POLKIT_RULES_DIR_DEFAULT/$VFILL_POLKIT_RULE_NAME"
+POLKIT_RULE=$POLKIT_RULE_DEFAULT
+if [[ -n ${VFILL_POLKIT_RULES_DIR:-} ]]; then
+  if rules_dir=$(vfill_polkit_rules_dir); then
+    POLKIT_RULE="$rules_dir/$VFILL_POLKIT_RULE_NAME"
+  else
+    echo "uninstall: removing $POLKIT_RULE_DEFAULT instead." >&2
+  fi
+fi
 
 # Recover from an earlier interrupted run. A staged file with no live hook
 # was left behind mid-uninstall and never made it back; put it back before
@@ -141,18 +156,22 @@ if run_root /bin/bash -c '
   set -uo pipefail
   shopt -s nullglob
   theme_dest="$1" prefix="$2" lock_file="$3" reboot_bin="$4" desktop_entry="$5"
-  polkit_rule="$6"
-  shift 6
+  polkit_rule="$6" polkit_rule_default="$7"
+  shift 7
 
   exec {lock_fd}>>"$lock_file" || exit 1
   flock "$lock_fd" || exit 1
 
   plymouth-set-default-theme omarchy || exit 1
   rm -rf -- "$theme_dest" "$theme_dest".new.* "$theme_dest".old.* "$prefix" || exit 1
-  rm -f -- "$reboot_bin" "$desktop_entry" "$polkit_rule" || exit 1
+  # The default rule path as well as any override, always: removing only the
+  # overridden one meant a single line in a shell profile could make this
+  # uninstall leave passwordless root installed. The two are the same path on
+  # every real run, and removing a file that is not there is free.
+  rm -f -- "$reboot_bin" "$desktop_entry" "$polkit_rule" "$polkit_rule_default" || exit 1
   "$@"
 ' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "$REBOOT_BIN" "$DESKTOP_ENTRY" \
-  "$POLKIT_RULE" "${rebuild_cmd[@]}"; then
+  "$POLKIT_RULE" "$POLKIT_RULE_DEFAULT" "${rebuild_cmd[@]}"; then
   outcome=succeeded
   trap - INT TERM HUP
   $hook_staged && rm -f -- "$HOOK_STAGED"

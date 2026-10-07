@@ -81,11 +81,14 @@ PREFIX=/usr/local/lib/omarchy-vfill
 MANUAL_COMMAND="sudo $PREFIX/bin/omarchy-vfill-retheme --force"
 
 # Mode auto's polkit rule. The real /etc/polkit-1/rules.d is never named except
-# in the one assertion below that checks the default, where nothing privileged
-# runs: everything that could write points at this scratch directory, which
-# install.sh accepts through VFILL_POLKIT_RULES_DIR the way the retheme accepts
-# VFILL_THEME_DEST.
-rules_dir="$scratch/polkit-rules.d"
+# in the assertions below that check the default, where nothing privileged runs:
+# everything that could write points at this scratch directory. install.sh only
+# accepts a VFILL_POLKIT_RULES_DIR at all when VFILL_TEST_POLKIT_RULES_DIR=1 is
+# set AND the value canonicalises under /tmp, /var/tmp or /dev/shm -- it is read
+# unprivileged and handed to root as an argv word, so the environment does not
+# get to choose where root writes a drop-in. Canonicalised here because that is
+# the form install.sh passes on.
+rules_dir=$(readlink -m "$scratch/polkit-rules.d")
 mkdir -p "$rules_dir"
 RULE_SRC="$ROOT/share/49-omarchy-vfill.rules"
 rule="$rules_dir/49-omarchy-vfill.rules"
@@ -97,7 +100,7 @@ run_install() {
   shift
   rm -f -- "$argv"
   printf '%s' "$answers" |
-    HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+    HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
       bash "$ROOT/install.sh" "$@" 2>&1
 }
 
@@ -131,6 +134,11 @@ assert_equals "/usr/local/share/applications/omarchy-vfill-reboot.desktop" "${RE
   "the privileged step is told where the desktop entry goes"
 assert_equals "$rule" "${RECORDED[10]}" \
   "the privileged step is told where mode auto's polkit rule goes"
+# And always the default path too, overridden or not: every mode but auto removes
+# both, so a stale override in the environment can never be the only path a mode
+# switch cleans up. That left passwordless root installed at the default path.
+assert_equals "/etc/polkit-1/rules.d/49-omarchy-vfill.rules" "${RECORDED[11]}" \
+  "the privileged step is always told the default rule path as well"
 
 [[ $output == *"How should the boot splash follow your desktop theme?"* ]] ||
   fail "the mode question is asked" "$output"
@@ -377,7 +385,7 @@ chmod +x "$partial/repo/bin/omarchy-vfill-retheme"
 cp "$ROOT/bin/omarchy-vfill-reboot" "$partial/repo/bin/omarchy-vfill-reboot"
 cp "$ROOT/share/omarchy-vfill-reboot.desktop" "$partial/repo/share/"
 cp "$ROOT/share/49-omarchy-vfill.rules" "$partial/repo/share/"
-mkdir -p "$partial/rules.d"
+mkdir -p "$partial/rules.d" "$partial/default-rules.d"
 
 # install.sh invokes: <elevate> /bin/bash -c <script> bash <prefix> <repo> \
 #   <theme_dir> <mode> <reboot_bin> <desktop_entry>
@@ -388,7 +396,8 @@ printf '%s\0' "\$@" >"$argv"
 exec env PATH="$partial/stubs:\$PATH" /bin/bash -c "\$3" bash \
   "$partial/prefix" "$partial/repo" "\$7" "\$8" \
   "$partial/reboot-bin" "$partial/entry.desktop" \
-  "$partial/rules.d/49-omarchy-vfill.rules"
+  "$partial/rules.d/49-omarchy-vfill.rules" \
+  "$partial/default-rules.d/49-omarchy-vfill.rules"
 STUB
   chmod +x "$partial/stubs/$elevate"
 done
@@ -484,6 +493,64 @@ load_root_argv
 assert_equals "/etc/polkit-1/rules.d/49-omarchy-vfill.rules" "${RECORDED[10]}" \
   "with nothing overriding it, the rule path is the real /etc/polkit-1/rules.d one"
 
+# --- A VFILL_POLKIT_RULES_DIR the gate does not allow ends the install. ----
+# The variable is read here, unprivileged, and handed into the root transaction as
+# an argv word -- which is how it got past the env scrubbing that makes
+# VFILL_THEME_DEST harmless. Unchecked, it chose where root wrote a drop-in: the
+# review demonstrated /etc/sudoers.d. Each case below must stop the install before
+# anything privileged runs; none of them may name a real directory that gets
+# written, so the hostile values are only ever *rejected*, never honoured.
+
+for bad in no-marker outside-scratch traversal; do
+  rm -f -- "$hook" "$argv"
+  case "$bad" in
+    # The marker alone gates nothing -- the environment supplies both the marker
+    # and the value -- so the value is checked as well. Without the marker, no
+    # override at all is accepted.
+    no-marker) env_marker="" bad_dir="$rules_dir" ;;
+    # With the marker, still only a scratch prefix.
+    outside-scratch) env_marker=1 bad_dir=/etc/sudoers.d ;;
+    # Canonicalised first, so this is /etc/sudoers.d too.
+    traversal) env_marker=1 bad_dir=/tmp/../etc/sudoers.d ;;
+  esac
+
+  output=$(env HOME="$home" PATH="$stubs:$PATH" \
+    ${env_marker:+VFILL_TEST_POLKIT_RULES_DIR=$env_marker} \
+    VFILL_POLKIT_RULES_DIR="$bad_dir" \
+    bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
+  status=$?
+
+  [[ $status -ne 0 ]] || fail "a refused VFILL_POLKIT_RULES_DIR exits non-zero: $bad" "$output"
+  [[ ! -f $argv ]] || fail "a refused VFILL_POLKIT_RULES_DIR runs nothing privileged: $bad" "$output"
+  [[ ! -e $hook ]] || fail "a refused VFILL_POLKIT_RULES_DIR installs no hook: $bad"
+  [[ $output == *"refusing VFILL_POLKIT_RULES_DIR=$bad_dir"* ]] ||
+    fail "the refusal names the value it rejected: $bad" "$output"
+  [[ $output == *"/etc/polkit-1/rules.d"* || $output == *"/tmp, /var/tmp or /dev/shm"* ]] ||
+    fail "the refusal says where the rule may go: $bad" "$output"
+  [[ $output == *"nothing was changed"* ]] ||
+    fail "the refusal says nothing was changed: $bad" "$output"
+done
+pass "an ungated, non-scratch or traversing VFILL_POLKIT_RULES_DIR ends the install, privileged step untouched"
+
+# A refused override is refused whatever the mode, because the value is read
+# before the mode is: a mode that would merely *remove* the rule must not get to
+# remove it from a path of the environment's choosing either.
+rm -f -- "$argv"
+output=$(env HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR=/etc/sudoers.d \
+  bash "$ROOT/install.sh" --mode manual </dev/null 2>&1)
+[[ $? -ne 0 && ! -f $argv ]] ||
+  fail "a refused VFILL_POLKIT_RULES_DIR ends the install in mode manual too" "$output"
+pass "a refused VFILL_POLKIT_RULES_DIR ends the install in mode manual too"
+
+# The default itself is not an override: spelling it out explicitly is accepted
+# and names the same path as setting nothing.
+rm -f -- "$argv"
+HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR=/etc/polkit-1/rules.d \
+  bash "$ROOT/install.sh" --mode manual </dev/null >/dev/null 2>&1
+load_root_argv
+assert_equals "/etc/polkit-1/rules.d/49-omarchy-vfill.rules" "${RECORDED[10]}" \
+  "VFILL_POLKIT_RULES_DIR set to the default path is accepted as the default"
+
 # --- The shipped rule approves exactly one program. ----------------------
 
 [[ -f $RULE_SRC ]] || fail "the polkit rule exists in the checkout"
@@ -514,7 +581,7 @@ pass "the shipped rule approves only the argument-free command line"
 # along; it takes a second, explicit flag.
 
 rm -f -- "$hook" "$argv"
-output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
   bash "$ROOT/install.sh" --mode auto </dev/null 2>&1)
 status=$?
 [[ $status -ne 0 ]] || fail "--mode auto on its own is refused" "$output"
@@ -623,10 +690,10 @@ for why in missing-rules-dir not-in-wheel; do
   rm -f -- "$hook" "$argv"
   if [[ $why == missing-rules-dir ]]; then
     output=$(HOME="$home" PATH="$stubs:$PATH" \
-      VFILL_POLKIT_RULES_DIR="$scratch/no-such-rules.d" \
+      VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$scratch/no-such-rules.d" \
       bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
   else
-    output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+    output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
       STUB_ID_GROUPS="someone users" \
       bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
   fi
@@ -655,7 +722,7 @@ pass "mode auto is refused, with its reason, when rules.d is missing or the user
 # ending the install.
 rm -f -- "$hook" "$argv"
 output=$(printf '%s' $'4\n3\n' | HOME="$home" PATH="$stubs:$PATH" \
-  VFILL_POLKIT_RULES_DIR="$rules_dir" STUB_ID_GROUPS="someone users" \
+  VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" STUB_ID_GROUPS="someone users" \
   bash "$ROOT/install.sh" 2>&1)
 assert_equals "0" "$?" "an unavailable mode auto at the prompt does not end the install"
 load_root_argv
@@ -668,9 +735,12 @@ pass "the prompt says why mode auto is unavailable"
   fail "an unavailable mode auto never asks for consent" "$output"
 pass "an unavailable mode auto never asks for consent"
 
-# --- A rule naming the wrong program is refused at install time. ---------
-# The rule hands one exact path passwordless root, so a rule whose path does not
-# match the retheme this installer installs must not be installed at all.
+# --- A rule that is not the shipped rule is refused at install time. ------
+# The rule hands one exact path passwordless root, so anything but the rule this
+# installer ships must not be installed at all. The check is a byte-for-byte
+# comparison against the text in install.sh, not a grep for the program string:
+# a grep passed any file that merely mentioned the retheme somewhere, so a
+# crafted rules file was enough to have root write whatever it contained.
 
 mutant="$scratch/mutant"
 mkdir -p "$mutant"
@@ -683,21 +753,64 @@ grep -qF "$PREFIX/bin/omarchy-vfill-retheme" "$mutant/share/49-omarchy-vfill.rul
 pass "prerequisite: the mutated rule no longer names the installed retheme"
 
 rm -f -- "$hook" "$argv"
-output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
   bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
 [[ $? -ne 0 ]] || fail "a rule naming the wrong program is refused" "$output"
 pass "a rule naming the wrong program is refused"
-[[ $output == *"does not name"* && $output == *"$PREFIX/bin/omarchy-vfill-retheme"* ]] ||
-  fail "the refusal says the rule does not name the installed retheme" "$output"
-pass "the refusal says the rule does not name the installed retheme"
+[[ $output == *"is not the rule this installer approves"* &&
+  $output == *"$PREFIX/bin/omarchy-vfill-retheme"* ]] ||
+  fail "the refusal says the rule is not the one this installer approves" "$output"
+pass "the refusal says the rule is not the one this installer approves"
 [[ ! -f $argv ]] || fail "a mismatched rule runs nothing privileged" "$output"
 pass "a mismatched rule runs nothing privileged"
 [[ ! -e $hook ]] || fail "a mismatched rule installs no hook"
 [[ ! -e $rule ]] || fail "a mismatched rule writes no polkit rule"
 pass "a mismatched rule installs neither the hook nor the rule"
 
+# A rule that still names the installed retheme, and would still have passed the
+# old grep, but widens what it approves: the second addRule below returns YES for
+# every pkexec action, which is passwordless root for anything. This is the case
+# the grep could not see and the comparison must.
+cp "$ROOT/share/49-omarchy-vfill.rules" "$mutant/share/49-omarchy-vfill.rules"
+cat >>"$mutant/share/49-omarchy-vfill.rules" <<'TAMPER'
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.policykit.exec") {
+    return polkit.Result.YES;
+  }
+});
+TAMPER
+grep -qF "\"$PREFIX/bin/omarchy-vfill-retheme\"" "$mutant/share/49-omarchy-vfill.rules" ||
+  fail "prerequisite: the tampered rule still names the installed retheme"
+pass "prerequisite: the tampered rule still names the installed retheme (the old grep passed it)"
+
+rm -f -- "$hook" "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
+  bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
+[[ $? -ne 0 ]] || fail "a tampered rule that still names the retheme is refused" "$output"
+pass "a tampered rule that still names the retheme is refused"
+[[ $output == *"is not the rule this installer approves"* ]] ||
+  fail "the refusal says the tampered rule is not the approved one" "$output"
+pass "the refusal says the tampered rule is not the approved one"
+[[ ! -f $argv ]] || fail "a tampered rule runs nothing privileged" "$output"
+pass "a tampered rule runs nothing privileged"
+[[ ! -e $rule ]] || fail "a tampered rule writes no polkit rule"
+pass "a tampered rule writes no polkit rule"
+
+# The shipped rule and the text install.sh compares it against have to stay
+# identical, so an intentional change to one is a failing test until it is made
+# to both. install.sh is the file an operator reads before trusting mode auto.
+expected_rule="$scratch/expected-rule"
+sed -n '/^polkit_rule_expected() {$/,/^RULE$/p' "$ROOT/install.sh" | sed '1,2d;$d' >"$expected_rule"
+[[ -s $expected_rule ]] ||
+  fail "prerequisite: install.sh's expected rule text could be extracted"
+pass "prerequisite: install.sh's expected rule text could be extracted"
+cmp -s "$expected_rule" "$RULE_SRC" ||
+  fail "install.sh's expected rule text is byte-identical to the shipped rule" \
+    "$(diff "$expected_rule" "$RULE_SRC")"
+pass "install.sh's expected rule text is byte-identical to the shipped rule"
+
 rm -f -- "$mutant/share/49-omarchy-vfill.rules" "$argv"
-output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_POLKIT_RULES_DIR="$rules_dir" \
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
   bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
 [[ $? -ne 0 ]] || fail "a missing rule file is refused" "$output"
 pass "a missing rule file is refused"
@@ -764,12 +877,20 @@ replay_rule="$replay_rules_dir/49-omarchy-vfill.rules"
 # only uid 0 is mapped inside, so install would fail outright.
 NS_ROOT="$(id -u):$(id -g)"
 
+# The eighth argument is the DEFAULT rule path, which the transaction removes
+# alongside the overridden one for every mode but auto. The replay gives it a
+# scratch path of its own: never the real
+# /etc/polkit-1/rules.d/49-omarchy-vfill.rules, which is a live file on a machine
+# installed in mode auto.
+replay_default_rule="$scratch/replay-default-rules.d/49-omarchy-vfill.rules"
+mkdir -p "$(dirname "$replay_default_rule")"
+
 replay() {
   local mode="$1"
   : >"$log"
   env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
     bash "$prefix" "$fakerepo" "$theme_dir" "$mode" "$reboot_bin" "$desktop_entry" \
-    "$replay_rule"
+    "$replay_rule" "$replay_default_rule"
 }
 
 replay reboot
@@ -835,11 +956,29 @@ pass "mode auto installs none of mode reboot's artefacts"
 for mode in theme-set manual reboot; do
   replay auto >/dev/null
   [[ -f $replay_rule ]] || fail "prerequisite: mode auto put the rule back"
+  # Stands for a rule installed at the DEFAULT path by an earlier install that ran
+  # without an override. Removing only the overridden path left this one behind --
+  # which is passwordless root surviving a mode switch away from auto.
+  printf 'polkit.addRule(function(action, subject) {});\n' >"$replay_default_rule"
   replay "$mode"
   assert_equals "0" "$?" "the root transaction succeeds switching from auto to $mode"
   [[ ! -e $replay_rule ]] || fail "switching from auto to $mode removes the polkit rule"
+  [[ ! -e $replay_default_rule ]] ||
+    fail "switching from auto to $mode removes the rule at the default path too"
 done
 pass "switching away from mode auto removes the polkit rule"
+pass "switching away from mode auto removes the rule at the default path as well as any override"
+
+# Mode auto itself installs the rule it was given and removes nothing: the
+# default path is a removal target, never something auto deletes behind its own
+# back. (On every real run the two are the same path anyway.)
+printf 'polkit.addRule(function(action, subject) {});\n' >"$replay_default_rule"
+replay auto
+assert_equals "0" "$?" "the root transaction succeeds in mode auto with a rule at the default path"
+[[ -f $replay_default_rule ]] ||
+  fail "mode auto does not remove the rule at the default path"
+pass "mode auto installs its rule and removes nothing"
+rm -f -- "$replay_default_rule"
 
 replay theme-set >/dev/null
 [[ ! -e $replay_rule ]] || fail "prerequisite: mode theme-set leaves no rule"
@@ -855,7 +994,7 @@ replay theme-set >/dev/null
 missing_rules_dir="$scratch/never-created-rules.d"
 env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
   bash "$prefix" "$fakerepo" "$theme_dir" auto "$reboot_bin" "$desktop_entry" \
-  "$missing_rules_dir/49-omarchy-vfill.rules" >/dev/null 2>&1
+  "$missing_rules_dir/49-omarchy-vfill.rules" "$replay_default_rule" >/dev/null 2>&1
 [[ ! -e $missing_rules_dir ]] ||
   fail "the transaction never creates the polkit rules directory"
 pass "the transaction never creates the polkit rules directory"
@@ -874,7 +1013,7 @@ chmod 0700 "$existing_apps"
 env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
   bash "$prefix" "$fakerepo" "$theme_dir" reboot \
   "$existing_bin/omarchy-vfill-reboot" "$existing_apps/omarchy-vfill-reboot.desktop" \
-  "$replay_rule"
+  "$replay_rule" "$replay_default_rule"
 assert_equals "0" "$?" "the root transaction succeeds into pre-existing directories"
 assert_equals "711" "$(stat -c %a "$existing_bin")" \
   "a pre-existing /usr/local/bin keeps its mode"
@@ -890,7 +1029,7 @@ missing_apps="$scratch/newdirs/applications"
 env PATH="$stubs:$PATH" unshare -r /bin/bash -c "$script" \
   bash "$prefix" "$fakerepo" "$theme_dir" reboot \
   "$missing_bin/omarchy-vfill-reboot" "$missing_apps/omarchy-vfill-reboot.desktop" \
-  "$replay_rule"
+  "$replay_rule" "$replay_default_rule"
 assert_equals "0" "$?" "the root transaction creates the directories when they are missing"
 assert_equals "755" "$(stat -c %a "$missing_bin")" "a created bin directory is 0755"
 assert_equals "755" "$(stat -c %a "$missing_apps")" "a created applications directory is 0755"

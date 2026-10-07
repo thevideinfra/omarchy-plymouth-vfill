@@ -307,6 +307,71 @@ vfill_open_user_file() {
   printf '%s\n' "$fd"
 }
 
+# Where mode auto's polkit rule lives, and the one name it ever has. The default
+# is the only directory a real run writes to or removes from;
+# VFILL_POLKIT_RULES_DIR exists so the tests can replay the privileged
+# transaction against a scratch directory instead of /etc/polkit-1/rules.d.
+#
+# This is NOT the VFILL_THEME_DEST situation. That one is read by
+# bin/omarchy-vfill-retheme inside the already-elevated process, where sudo's
+# env_reset and pkexec have long since dropped it. This one is read by the
+# UNPRIVILEGED half of install.sh and uninstall.sh and then handed into the root
+# transaction as an argv word, which smuggles it straight past that scrubbing. So
+# honouring it unconditionally let the environment choose where root writes a
+# drop-in, and what uninstall removes: VFILL_POLKIT_RULES_DIR=/etc/sudoers.d had
+# root install a file there, and one line in a shell profile made ./uninstall.sh
+# leave passwordless root behind.
+#
+# The gate is the same shape as VFILL_RETHEME's in bin/omarchy-vfill-reboot, and
+# carries the same lesson: a marker variable on its own gates nothing, because
+# the environment supplies both the marker and the value it guards. What makes
+# this safe is the second half -- even with VFILL_TEST_POLKIT_RULES_DIR=1 set,
+# the value has to canonicalise to somewhere under /tmp, /var/tmp or /dev/shm,
+# where no polkit, sudo or systemd drop-in is ever read from. Canonicalising
+# first is what stops /tmp/../etc/sudoers.d from passing.
+#
+# Anything else is refused outright rather than quietly ignored: an install that
+# stops and says why is easier to understand than one that writes somewhere the
+# operator never asked for. Callers that must not abort -- uninstall.sh, which
+# would otherwise strand passwordless root -- fall back to the default instead.
+#
+# A value that does not exist yet is accepted, deliberately: install.sh's "this
+# polkit has no rules.d" refusal has to be reachable from the tests, and a
+# missing directory under a scratch prefix is how they reach it.
+VFILL_POLKIT_RULES_DIR_DEFAULT=/etc/polkit-1/rules.d
+VFILL_POLKIT_RULE_NAME=49-omarchy-vfill.rules
+
+vfill_polkit_rules_dir() {
+  local requested=${VFILL_POLKIT_RULES_DIR:-} canonical prefix
+  local default=$VFILL_POLKIT_RULES_DIR_DEFAULT
+
+  if [[ -z $requested || $requested == "$default" ]]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+
+  if [[ ${VFILL_TEST_POLKIT_RULES_DIR:-} != 1 ]]; then
+    printf 'vfill: refusing VFILL_POLKIT_RULES_DIR=%s: mode auto'"'"'s polkit rule only ever goes in %s\n' \
+      "$requested" "$default" >&2
+    return 1
+  fi
+
+  # -m, not -f: the path is allowed not to exist yet.
+  canonical=$(readlink -m -- "$requested" 2>/dev/null) || canonical=""
+  if [[ -n $canonical ]]; then
+    for prefix in /tmp /var/tmp /dev/shm; do
+      if [[ $canonical == "$prefix"/* ]]; then
+        printf '%s\n' "$canonical"
+        return 0
+      fi
+    done
+  fi
+
+  printf 'vfill: refusing VFILL_POLKIT_RULES_DIR=%s: even with VFILL_TEST_POLKIT_RULES_DIR set it may only name a scratch directory under /tmp, /var/tmp or /dev/shm\n' \
+    "$requested" >&2
+  return 1
+}
+
 # Render the theme-set hook, pointing it at the installed root-owned retheme
 # script. Refuses a relative path: the hook runs from the user's session, where
 # the working directory is arbitrary.
