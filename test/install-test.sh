@@ -901,6 +901,46 @@ cmp -s "$expected_rule" "$RULE_SRC" ||
     "$(diff "$expected_rule" "$RULE_SRC")"
 pass "install.sh's expected rule text is byte-identical to the shipped rule"
 
+# --- A rule that does not name THIS installer's prefix is refused. ---------
+# cmp pins the rule's bytes, but a baseline and a shipped rule that agree on some
+# other prefix agree with each other perfectly well -- so cmp on its own does not
+# enforce the relationship the rule's own comment claims, that the program path
+# names the retheme this installer installs. A rule naming a program that is
+# never installed here is passwordless root for whatever does end up at that path.
+cp "$ROOT/share/49-omarchy-vfill.rules" "$mutant/share/49-omarchy-vfill.rules"
+sed -i 's|^PREFIX=/usr/local/lib/omarchy-vfill$|PREFIX=/opt/elsewhere/omarchy-vfill|' \
+  "$mutant/install.sh"
+grep -qx 'PREFIX=/opt/elsewhere/omarchy-vfill' "$mutant/install.sh" ||
+  fail "prerequisite: the mutant installer installs into a different prefix"
+pass "prerequisite: the mutant installer installs into a different prefix"
+
+# Nothing about the rule or the baseline changed, so the byte comparison still
+# agrees: whatever refuses this install is not cmp.
+mutant_expected="$scratch/mutant-expected-rule"
+sed -n '/^polkit_rule_expected() {$/,/^RULE$/p' "$mutant/install.sh" | sed '1,2d;$d' \
+  >"$mutant_expected"
+cmp -s "$mutant_expected" "$mutant/share/49-omarchy-vfill.rules" ||
+  fail "prerequisite: the mismatched prefix still passes the byte comparison" \
+    "$(diff "$mutant_expected" "$mutant/share/49-omarchy-vfill.rules")"
+pass "prerequisite: the mismatched prefix still passes the byte comparison (cmp alone would install it)"
+
+rm -f -- "$hook" "$argv"
+output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
+  bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)
+[[ $? -ne 0 ]] || fail "a rule that does not name the installer's own prefix is refused" "$output"
+pass "a rule that does not name the installer's own prefix is refused"
+[[ $output == *"/opt/elsewhere/omarchy-vfill/bin/omarchy-vfill-retheme"* ]] ||
+  fail "the refusal names the prefix the rule would have to name" "$output"
+pass "the refusal names the prefix the rule would have to name"
+[[ ! -f $argv ]] || fail "a prefix-mismatched rule runs nothing privileged" "$output"
+pass "a prefix-mismatched rule runs nothing privileged"
+[[ ! -e $hook ]] || fail "a prefix-mismatched rule installs no hook"
+[[ ! -e $rule ]] || fail "a prefix-mismatched rule writes no polkit rule"
+pass "a prefix-mismatched rule installs neither the hook nor the rule"
+
+sed -i 's|^PREFIX=/opt/elsewhere/omarchy-vfill$|PREFIX=/usr/local/lib/omarchy-vfill|' \
+  "$mutant/install.sh"
+
 rm -f -- "$mutant/share/49-omarchy-vfill.rules" "$argv"
 output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
   bash "$mutant/install.sh" --mode auto --i-understand </dev/null 2>&1)

@@ -213,6 +213,24 @@ check_rule_path() {
     return 1
   }
 
+  # The comparison below pins the rule's bytes; this pins them to the prefix THIS
+  # installer installs into. The baseline is a quoted heredoc, so it cannot
+  # interpolate $PREFIX -- which is how the relationship the rule's own comment
+  # claims ("the program path below has to name the installed retheme exactly")
+  # came to be enforced by nothing at all once the old
+  # grep -qF "$PREFIX/bin/omarchy-vfill-retheme" was replaced by cmp. A baseline
+  # naming some other prefix passes cmp perfectly well against a shipped rule
+  # naming the same other prefix, and mode auto would then hand passwordless root
+  # to a program this installer never installs.
+  polkit_rule_expected | grep -qF "$PREFIX/bin/omarchy-vfill-retheme" || {
+    echo "install: the rule this installer approves does not name" >&2
+    echo "install:   $PREFIX/bin/omarchy-vfill-retheme, which is where this" >&2
+    echo "install:   installer puts the retheme. The rule grants passwordless root to the" >&2
+    echo "install:   program it names, so a rule naming anything else would grant it to a" >&2
+    echo "install:   program that is not installed here. Refusing to install it." >&2
+    return 1
+  }
+
   polkit_rule_expected | cmp -s - "$POLKIT_RULE_SRC" || {
     echo "install: $POLKIT_RULE_SRC is not the rule this installer approves" >&2
     echo "install:   It is compared byte for byte against the rule written out in" >&2
