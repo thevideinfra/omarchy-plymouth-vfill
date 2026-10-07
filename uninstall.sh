@@ -1,9 +1,14 @@
 #!/bin/bash
 
 # Remove the omarchy-vfill theme, and hand the boot splash back to Omarchy's
-# own theme. Also removes a theme-set hook left by an earlier install that
-# recoloured the splash automatically; current installs no longer create one,
-# but this still cleans one up if present.
+# own theme.
+#
+# Every mode's artefacts go, whichever mode is recorded in $PREFIX/mode: the
+# theme-set hook under $HOME, mode reboot's root-owned command and desktop
+# entry, and mode auto's polkit rule. The mode file itself lives inside $PREFIX
+# and goes with it. Nothing reads the mode file to decide -- removing an
+# artefact that is not there is free, and that way a mode file lost or never
+# written still leaves nothing behind.
 
 set -uo pipefail
 
@@ -15,6 +20,12 @@ fi
 REPO=$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)
 THEME_DEST=/usr/share/plymouth/themes/omarchy-vfill
 PREFIX=/usr/local/lib/omarchy-vfill
+# Mode reboot's root-owned artefacts. They live outside $PREFIX, so removing
+# the prefix does not take them with it; they have to be named. Passed into
+# the privileged transaction as arguments, so the tests can replay it against
+# scratch paths.
+REBOOT_BIN=/usr/local/bin/omarchy-vfill-reboot
+DESKTOP_ENTRY=/usr/local/share/applications/omarchy-vfill-reboot.desktop
 # The same lock bin/omarchy-vfill-retheme takes, so an uninstall never
 # interleaves with a retheme still publishing or rebuilding.
 LOCK_FILE=/run/lock/omarchy-vfill.lock
@@ -29,6 +40,27 @@ HOOK_DEST="$HOOK_DIR/omarchy-vfill.sh"
 HOOK_STAGED="$HOME/.config/omarchy/hooks/omarchy-vfill.sh.uninstalling"
 
 source "$REPO/lib/vfill.sh"
+
+# Mode auto's polkit rule, removed whether or not it is there -- as with every
+# other artefact, the recorded mode is not consulted.
+#
+# Unlike VFILL_THEME_DEST, which bin/omarchy-vfill-retheme reads inside the
+# already-elevated process where sudo's env_reset and pkexec have dropped it,
+# VFILL_POLKIT_RULES_DIR is read here, unprivileged, and handed into the root
+# transaction as an argv word -- so it reached root past that scrubbing. It
+# therefore goes through the same gate install.sh uses, and an override that the
+# gate refuses is ignored rather than fatal: a shell profile with a stale value
+# in it must never be able to make an uninstall exit leaving passwordless root
+# installed. The default path below is removed either way.
+POLKIT_RULE_DEFAULT="$VFILL_POLKIT_RULES_DIR_DEFAULT/$VFILL_POLKIT_RULE_NAME"
+POLKIT_RULE=$POLKIT_RULE_DEFAULT
+if [[ -n ${VFILL_POLKIT_RULES_DIR:-} ]]; then
+  if rules_dir=$(vfill_polkit_rules_dir); then
+    POLKIT_RULE="$rules_dir/$VFILL_POLKIT_RULE_NAME"
+  else
+    echo "uninstall: removing $POLKIT_RULE_DEFAULT instead." >&2
+  fi
+fi
 
 # Recover from an earlier interrupted run. A staged file with no live hook
 # was left behind mid-uninstall and never made it back; put it back before
@@ -45,8 +77,8 @@ elif [[ -f $HOOK_STAGED && -f $HOOK_DEST ]]; then
   rm -f -- "$HOOK_STAGED"
 fi
 
-# A hook, if present, is a leftover from an earlier install (current installs
-# no longer create one). Move it aside rather than deleting it outright: a
+# A hook is present when the install was in mode theme-set. Move it aside
+# rather than deleting it outright: a
 # theme change mid-uninstall must not retheme against a half-removed install,
 # but a failed, cancelled, or interrupted privileged transaction below must
 # not silently leave the theme installed with nothing keeping it current -- so
@@ -123,16 +155,23 @@ run_root() {
 if run_root /bin/bash -c '
   set -uo pipefail
   shopt -s nullglob
-  theme_dest="$1" prefix="$2" lock_file="$3"
-  shift 3
+  theme_dest="$1" prefix="$2" lock_file="$3" reboot_bin="$4" desktop_entry="$5"
+  polkit_rule="$6" polkit_rule_default="$7"
+  shift 7
 
   exec {lock_fd}>>"$lock_file" || exit 1
   flock "$lock_fd" || exit 1
 
   plymouth-set-default-theme omarchy || exit 1
   rm -rf -- "$theme_dest" "$theme_dest".new.* "$theme_dest".old.* "$prefix" || exit 1
+  # The default rule path as well as any override, always: removing only the
+  # overridden one meant a single line in a shell profile could make this
+  # uninstall leave passwordless root installed. The two are the same path on
+  # every real run, and removing a file that is not there is free.
+  rm -f -- "$reboot_bin" "$desktop_entry" "$polkit_rule" "$polkit_rule_default" || exit 1
   "$@"
-' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "${rebuild_cmd[@]}"; then
+' bash "$THEME_DEST" "$PREFIX" "$LOCK_FILE" "$REBOOT_BIN" "$DESKTOP_ENTRY" \
+  "$POLKIT_RULE" "$POLKIT_RULE_DEFAULT" "${rebuild_cmd[@]}"; then
   outcome=succeeded
   trap - INT TERM HUP
   $hook_staged && rm -f -- "$HOOK_STAGED"

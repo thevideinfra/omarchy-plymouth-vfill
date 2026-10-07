@@ -91,11 +91,18 @@ assert_equals "plymouth-set-default-theme omarchy-vfill
 limine-mkinitcpio " "$(stub_calls)" "a successful run sets the default, then rebuilds"
 
 check "$dest"
-assert_equals "1" "$?" "--check reports current right after a successful run"
+assert_equals "3" "$?" "--check reports current (exit 3) right after a successful run"
 
 assert_equals "$(sha256sum <"$dest/logo.png" | cut -d' ' -f1)" \
   "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest/.vfill-marker")" \
   "the marker hashes the published logo bytes"
+
+# The theme's own unlock.png is published as-is -- and, since root reads it once
+# into a verified copy and stages, publishes and hashes that copy rather than
+# re-reading the path, those bytes are the ones that were checked.
+cmp -s "$theme_dir/unlock.png" "$dest/logo.png" ||
+  fail "the published logo is byte-for-byte the theme's unlock.png"
+pass "the published logo is byte-for-byte the theme's unlock.png"
 
 # --- A matching marker short-circuits; --force restages anyway. ------------
 
@@ -116,7 +123,7 @@ limine-mkinitcpio " "$(stub_calls)" "--force restages and rebuilds despite a mat
   fail "--force republishes the theme files"
 pass "--force republishes the theme files"
 check "$dest"
-assert_equals "1" "$?" "--check reports current after a --force run"
+assert_equals "3" "$?" "--check reports current (exit 3) after a --force run"
 
 # --check and --force together are rejected: --force only applies to a real run.
 check_force=$(VFILL_THEME_DEST="$dest" "$RETHEME" --check --force --theme-dir "$theme_dir" 2>&1)
@@ -178,3 +185,203 @@ wait "$waiter"
 assert_equals "0" "$?" "the waiting run completes once the lock is released"
 [[ -f $dest_lock/.vfill-marker ]] || fail "the waiting run publishes after the lock is released"
 pass "the waiting run publishes after the lock is released"
+
+# --- The bytes published are the bytes that were checked, even when the theme's
+#     unlock.png changes underneath. ------------------------------------------
+# The retheme opens the theme's unlock.png once, checks the inode it actually
+# opened, and stages, publishes and hashes that copy. Nothing re-reads the path
+# afterwards -- which is what makes a racing swap after the check harmless, and
+# the same reason root never blocks on a path swapped to a FIFO while it holds the
+# lock.
+#
+# The swap is performed by a mktemp stub at the moment the retheme asks for its
+# staging directory: after the verified copy, immediately before staging, which is
+# exactly where a racing process would strike.
+
+swap_theme="$scratch/theme-swapped"
+mkdir -p "$swap_theme"
+cp "$theme_dir/colors.toml" "$swap_theme/colors.toml"
+magick -size 40x10 xc:white -alpha set "$swap_theme/unlock.png"
+original_logo_sha=$(sha256sum "$swap_theme/unlock.png" | cut -d' ' -f1)
+
+swapped="$scratch/swapped-bytes.png"
+magick -size 40x10 xc:"#FF0000" -alpha set "$swapped"
+swapped_sha=$(sha256sum "$swapped" | cut -d' ' -f1)
+[[ $original_logo_sha != "$swapped_sha" ]] ||
+  fail "prerequisite: the swapped artwork differs from the original"
+pass "prerequisite: the swapped artwork differs from the original"
+
+REAL_MKTEMP=$(command -v mktemp) || fail "mktemp is available"
+cat >"$stubs/mktemp" <<STUB
+#!/bin/bash
+# Stands in for a process racing the retheme: it replaces the theme's artwork at
+# the instant the staging directory is created, i.e. after the retheme has taken
+# its verified copy.
+if [[ "\$*" == *-d* ]]; then
+  cp -- "$swapped" "$swap_theme/unlock.png"
+fi
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$stubs/mktemp"
+
+dest_swap="$scratch/dest-swapped"
+: >"$log"
+env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_swap" VFILL_LOCK_FILE="$scratch/lock" \
+  unshare -r "$RETHEME" --theme-dir "$swap_theme" >/dev/null 2>&1
+assert_equals "0" "$?" "a run whose artwork is swapped mid-run still succeeds"
+
+assert_equals "$swapped_sha" "$(sha256sum "$swap_theme/unlock.png" | cut -d' ' -f1)" \
+  "prerequisite: the swap really happened during the run"
+assert_equals "$original_logo_sha" "$(sha256sum "$dest_swap/logo.png" | cut -d' ' -f1)" \
+  "the published logo is the bytes that were checked, not the ones swapped in after"
+assert_equals "$original_logo_sha" \
+  "$(sed -nE 's/^logo_sha256=(.*)$/\1/p' "$dest_swap/.vfill-marker")" \
+  "the marker hashes the bytes that were checked, not a fresh read of the path"
+
+rm -f -- "$stubs/mktemp"
+
+# --- A privileged run never hashes the theme's own path. -------------------
+# Everything root reads the artwork for -- the marker comparison that decides
+# whether to republish, and the marker it writes afterwards -- reads the verified
+# copy. Hashing the path instead would be root opening user-controlled content
+# (blocking, if it has become a FIFO, while it holds the lock) and would put the
+# digest of whatever was swapped in since into a world-readable marker.
+#
+# A stale marker is in place so the comparison really does reach the hash: with no
+# marker at all it returns before hashing anything.
+hash_dest="$scratch/dest-hash-source"
+mkdir -p "$hash_dest"
+vfill_write_marker "$hash_dest/.vfill-marker" "000000" "DFEDE5" \
+  "$theme_dir/unlock.png" "DFEDE5"
+
+REAL_SHA256SUM=$(command -v sha256sum) || fail "sha256sum is available"
+sha_log="$scratch/sha256sum.log"
+: >"$sha_log"
+cat >"$stubs/sha256sum" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >>"$sha_log"
+exec "$REAL_SHA256SUM" "\$@"
+STUB
+chmod +x "$stubs/sha256sum"
+
+: >"$log"
+env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$hash_dest" VFILL_LOCK_FILE="$scratch/lock" \
+  unshare -r "$RETHEME" --theme-dir "$theme_dir" >/dev/null 2>&1
+assert_equals "0" "$?" "a run against a stale marker republishes and succeeds"
+rm -f -- "$stubs/sha256sum"
+
+[[ -s $sha_log ]] ||
+  fail "prerequisite: the run hashed something, so the assertion below means something"
+pass "prerequisite: the run hashed something at all"
+grep -qF "$theme_dir/unlock.png" "$sha_log" &&
+  fail "a privileged run never hashes the theme's own unlock.png path" "$(cat "$sha_log")"
+pass "a privileged run never hashes the theme's own unlock.png path"
+
+# --- A colors.toml that cannot be read without blocking does not wedge root. ---
+# The colour reads happen after the lock is taken, six times per run, on a path
+# the user controls. sed's open of a FIFO with no writer never returns, so an
+# unbounded read left root holding /run/lock/omarchy-vfill.lock forever and every
+# later retheme -- and the whole of uninstall.sh's privileged transaction -- queued
+# behind it. The read is bounded instead, so this is a refusal: the run fails, the
+# lock is released, and nothing is published.
+#
+# The run goes through an OUTER timeout as well, and a status of 124 from it is
+# itself a failure, because it would mean the bound was the test's and not the
+# retheme's.
+fifo_theme="$scratch/theme-colors-fifo"
+mkdir -p "$fifo_theme"
+mkfifo "$fifo_theme/colors.toml"
+cp "$theme_dir/unlock.png" "$fifo_theme/unlock.png"
+
+dest_fifo="$scratch/dest-colors-fifo"
+: >"$log"
+start=$SECONDS
+timeout -k 2 25 env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_fifo" VFILL_LOCK_FILE="$scratch/lock" \
+  VFILL_OPEN_TIMEOUT=2 \
+  unshare -r "$RETHEME" --theme-dir "$fifo_theme" >/dev/null 2>&1
+status=$?
+elapsed=$((SECONDS - start))
+
+[[ $status -ne 0 ]] || fail "a run whose colors.toml is a FIFO fails rather than publishing"
+pass "a run whose colors.toml is a FIFO fails rather than publishing"
+[[ $status -ne 124 ]] ||
+  fail "the FIFO refusal is the retheme's own bound, not the test's outer timeout" \
+    "the run did not return within the outer 25 s: it is still holding $scratch/lock"
+pass "the FIFO refusal is the retheme's own bound, not the test's outer timeout"
+((elapsed < 20)) ||
+  fail "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT" "took ${elapsed}s with a 2 s bound"
+pass "the FIFO refusal is bounded by VFILL_OPEN_TIMEOUT"
+[[ ! -e $dest_fifo ]] ||
+  fail "a run whose colors.toml is a FIFO publishes nothing" "$(ls -A "$dest_fifo" 2>&1)"
+pass "a run whose colors.toml is a FIFO publishes nothing"
+assert_equals "" "$(stub_calls)" \
+  "a run whose colors.toml is a FIFO sets no default and rebuilds nothing"
+flock -n "$scratch/lock" true ||
+  fail "the bounded refusal released the retheme lock" \
+    "the lock is still held, so every later retheme and uninstall.sh would block on it"
+pass "the bounded refusal released the retheme lock"
+
+# A FIFO in the staging reads is bounded too: vfill_stage_theme reads colors.toml
+# three more times, after the publish has begun. The run above never reaches them,
+# so this one lets the script's own reads succeed and makes the staging reads block
+# instead -- the swap is performed by a mktemp stub at the moment the staging
+# directory is created, which is exactly where a racing process would strike.
+swap_fifo_theme="$scratch/theme-colors-fifo-swapped"
+mkdir -p "$swap_fifo_theme"
+cp "$theme_dir/colors.toml" "$swap_fifo_theme/colors.toml"
+cp "$theme_dir/unlock.png" "$swap_fifo_theme/unlock.png"
+
+cat >"$stubs/mktemp" <<STUB
+#!/bin/bash
+# Stands in for a process racing the retheme: it replaces colors.toml with a FIFO
+# at the instant the staging directory is created, i.e. after the script's own
+# three reads and immediately before vfill_stage_theme's three.
+if [[ "\$*" == *-d* ]]; then
+  rm -f -- "$swap_fifo_theme/colors.toml"
+  mkfifo "$swap_fifo_theme/colors.toml"
+fi
+exec "$REAL_MKTEMP" "\$@"
+STUB
+chmod +x "$stubs/mktemp"
+
+dest_fifo_swap="$scratch/dest-colors-fifo-swapped"
+: >"$log"
+start=$SECONDS
+timeout -k 2 25 env -u PKEXEC_UID -u SUDO_UID -u SUDO_USER \
+  PATH="$stubs:$PATH" HOME="$scratch/home" OMARCHY_PATH="$omarchy_path" \
+  VFILL_THEME_DEST="$dest_fifo_swap" VFILL_LOCK_FILE="$scratch/lock" \
+  VFILL_OPEN_TIMEOUT=2 \
+  unshare -r "$RETHEME" --theme-dir "$swap_fifo_theme" >/dev/null 2>&1
+status=$?
+elapsed=$((SECONDS - start))
+rm -f -- "$stubs/mktemp"
+
+[[ -p $swap_fifo_theme/colors.toml ]] ||
+  fail "prerequisite: colors.toml really was swapped to a FIFO during the run"
+pass "prerequisite: colors.toml really was swapped to a FIFO during the run"
+[[ $status -ne 0 ]] ||
+  fail "a colors.toml swapped to a FIFO mid-run fails rather than publishing"
+pass "a colors.toml swapped to a FIFO mid-run fails rather than publishing"
+[[ $status -ne 124 ]] ||
+  fail "the staging reads are bounded by the retheme, not by the test's outer timeout" \
+    "the run did not return within the outer 25 s: it is still holding $scratch/lock"
+pass "the staging reads are bounded by the retheme, not by the test's outer timeout"
+((elapsed < 20)) ||
+  fail "the staging reads are bounded by VFILL_OPEN_TIMEOUT" "took ${elapsed}s with a 2 s bound"
+pass "the staging reads are bounded by VFILL_OPEN_TIMEOUT"
+[[ ! -e $dest_fifo_swap ]] ||
+  fail "a colors.toml swapped to a FIFO mid-run publishes nothing" \
+    "$(ls -A "$dest_fifo_swap" 2>&1)"
+pass "a colors.toml swapped to a FIFO mid-run publishes nothing"
+assert_equals "" "$(stub_calls)" \
+  "a colors.toml swapped to a FIFO mid-run sets no default and rebuilds nothing"
+flock -n "$scratch/lock" true ||
+  fail "the bounded staging refusal released the retheme lock" \
+    "the lock is still held, so every later retheme and uninstall.sh would block on it"
+pass "the bounded staging refusal released the retheme lock"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Plymouth vfill reboot
+Comment=Recolour the boot splash for the current theme, then reboot
+Exec=/usr/local/bin/omarchy-vfill-reboot
+Terminal=true
+Icon=system-reboot
+Categories=System;

@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# "Plymouth vfill reboot" -- the install mode `reboot` action.
+#
+# Runs as the user. Brings the omarchy-vfill splash in step with the current
+# Omarchy theme and then reboots, which is the one moment where paying for a
+# ~90 s initramfs rebuild costs the user nothing: the machine is going down
+# anyway, and the splash they are about to see is the one being rebuilt.
+#
+# The rule throughout is that the machine only goes down if the splash it
+# would come back up with is actually correct. Anything that goes wrong prints
+# why and exits non-zero without rebooting, so the user can fix it while the
+# session is still there rather than discovering it at the next boot.
+
+set -uo pipefail
+
+# Hardcoded on a real run. This is NOT the same situation as VFILL_THEME_DEST
+# and VFILL_LOCK_FILE in bin/omarchy-vfill-retheme: those are read by the
+# already-elevated process, where sudo's env_reset and pkexec have long since
+# dropped them. VFILL_RETHEME is read here, unprivileged, and it names the
+# program handed to pkexec -- so honouring it unconditionally would let the
+# environment choose what gets elevated.
+#
+# The gate is therefore which file is running, which the environment cannot
+# forge: VFILL_RETHEME is honoured only when this script is NOT the installed
+# copy at $INSTALLED_SELF. Running the checkout's copy is how the tests reach
+# it; the installed copy ignores it however the environment is set.
+#
+# The previous gate -- honour it "only under VFILL_TEST" -- gated nothing, since
+# the environment supplied both the gate and the value it guarded, so
+# VFILL_TEST=1 VFILL_RETHEME=/evil still handed /evil to pkexec.
+#
+# Both sides are canonicalised so a symlink cannot smuggle the installed copy
+# past the comparison, and an unresolvable $0 keeps the hardcoded path: the gate
+# fails closed.
+#
+# Limit: running a copy of this script from outside /usr/local/bin bypasses the
+# gate, which is what the tests do. The only shipped invocation is the desktop
+# entry's absolute Exec, and pkexec still authenticates and names the program.
+INSTALLED_SELF=/usr/local/bin/omarchy-vfill-reboot
+RETHEME=/usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme
+
+self_path=$(readlink -f -- "$0" 2>/dev/null) || self_path=""
+installed_self=$(readlink -f -- "$INSTALLED_SELF" 2>/dev/null) || installed_self="$INSTALLED_SELF"
+if [[ -n ${VFILL_RETHEME:-} && -n $self_path && $self_path != "$installed_self" ]]; then
+  RETHEME=$VFILL_RETHEME
+fi
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+
+[[ -x $RETHEME ]] || {
+  echo "omarchy-vfill-reboot: not installed: $RETHEME" >&2
+  echo "omarchy-vfill-reboot: not rebooting" >&2
+  exit 1
+}
+
+# There is deliberately no check for $THEME_DIR here: --check reports a missing
+# or unreadable theme as an error distinct from "already current", so the
+# retheme's own message is better than one guessed at from the directory alone.
+
+# Same convention as install.sh and uninstall.sh: a terminal can take a sudo
+# password prompt, a desktop launch without one needs pkexec's dialog.
+run_root() {
+  if [[ -t 0 ]]; then
+    sudo "$@"
+  else
+    pkexec "$@"
+  fi
+}
+
+# --check writes nothing and needs no privileges, so the common case -- the
+# theme has not changed -- never asks for a password at all. It exits 0 when a
+# retheme is needed, 3 when the splash is already current, and anything else on
+# a real error. Its stderr is left alone so its own diagnostic reaches the user
+# verbatim; only those two codes are ever treated as "no problem".
+"$RETHEME" --check --theme-dir "$THEME_DIR"
+check_status=$?
+
+case $check_status in
+  0)
+    echo "omarchy-vfill-reboot: the theme changed; updating the boot splash first."
+    echo "omarchy-vfill-reboot: this rebuilds the initramfs and takes a few moments."
+    run_root "$RETHEME" --theme-dir "$THEME_DIR" || {
+      echo "omarchy-vfill-reboot: the boot splash update failed or was cancelled; NOT rebooting" >&2
+      exit 1
+    }
+    ;;
+  3)
+    echo "omarchy-vfill-reboot: the boot splash is already current; nothing to update."
+    ;;
+  *)
+    echo "omarchy-vfill-reboot: could not check the boot splash (exit $check_status); NOT rebooting" >&2
+    echo "omarchy-vfill-reboot: the message above says why." >&2
+    exit 1
+    ;;
+esac
+
+echo "omarchy-vfill-reboot: rebooting."
+systemctl reboot || {
+  echo "omarchy-vfill-reboot: systemctl reboot failed; the boot splash is up to date" >&2
+  exit 1
+}

@@ -679,6 +679,13 @@ git commit -m "Vendor the vertical-fill theme and add staging"
 
 ### Task 5: Retheme entry point and theme-set hook
 
+> **Note (2026-10-06):** `--check`'s exit codes below are superseded. As shipped
+> they are **0** a retheme is needed, **3** the splash is already current, **1**
+> an error (no active theme, or no colour/logo), **2** `--check` combined with `--force`; usage errors
+> (`--theme-dir needs a value`, an unknown option) exit **1**. "Already current" moved off 1 so a caller cannot read a broken
+> theme as "nothing to do"; anything that is neither 0 nor 3 is a failure. The
+> plan text that follows is left as it was written.
+
 **Files:**
 - Create: `bin/omarchy-vfill-retheme`
 - Create: `hooks/theme-set.sh`
