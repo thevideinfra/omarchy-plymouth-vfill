@@ -78,7 +78,7 @@ check_status=$?
 case $check_status in
   0)
     echo "omarchy-vfill-reboot: the theme changed; updating the boot splash first."
-    echo "omarchy-vfill-reboot: this rebuilds the initramfs and takes about 90 seconds."
+    echo "omarchy-vfill-reboot: this rebuilds the initramfs and takes a few moments."
     run_root "$RETHEME" --theme-dir "$THEME_DIR" || {
       echo "omarchy-vfill-reboot: the boot splash update failed or was cancelled; NOT rebooting" >&2
       exit 1

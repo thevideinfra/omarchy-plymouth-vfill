@@ -52,7 +52,7 @@ twice and rebuilds twice.
 ## Keeping the splash in step with your theme
 
 Nothing upstream recolours `omarchy-vfill`, so something has to. Recolouring
-means a root-privileged initramfs rebuild of roughly 90 seconds, and the four
+means a root-privileged initramfs rebuild of a few moments, and the four
 modes differ only in when you pay for it, and whether you are asked first. Pick
 one at install time; re-run `./install.sh` to change your mind, which removes the
 previous mode's artefacts.
@@ -137,8 +137,7 @@ Whichever mode you installed, this always works:
 sudo /usr/local/lib/omarchy-vfill/bin/omarchy-vfill-retheme --force
 ```
 
-That asks for your password once and rebuilds the initramfs (roughly 90
-seconds).
+That asks for your password once and rebuilds the initramfs (a few moments).
 
 ### Where the logo comes from
 

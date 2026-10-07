@@ -299,7 +299,7 @@ else
 fi
 
 # --- The desktop entry points at the command and shows its progress. ------
-# The rebuild takes about 90 seconds, so Terminal=true is load-bearing: the
+# The rebuild takes a few moments, so Terminal=true is load-bearing: the
 # user has to be able to see it working, and see it fail.
 
 entry="$ROOT/share/omarchy-vfill-reboot.desktop"

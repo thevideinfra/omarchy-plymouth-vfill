@@ -541,7 +541,7 @@ case "$MODE" in
   theme-set)
     echo "install: mode: at theme change. $HOOK_DEST"
     echo "install:   updates the splash when the theme's colours change, asking for your"
-    echo "install:   password and rebuilding the initramfs (about 90 seconds) when it does."
+    echo "install:   password and rebuilding the initramfs (a few moments) when it does."
     echo "install:   A theme change that alters nothing it bakes in costs nothing at all."
     echo "install:   The escalated half passes no arguments, so it recolours from the theme"
     echo "install:   under the home directory in your passwd entry, not from \$HOME -- the"
@@ -551,7 +551,7 @@ case "$MODE" in
     echo "install: mode: before reboot. Nothing happens on a theme change; choose"
     echo "install:   \"Plymouth vfill reboot\" from your launcher (or run"
     echo "install:   $REBOOT_BIN) and the splash is brought up to"
-    echo "install:   date first -- about 90 seconds -- and the machine reboots only if that worked."
+    echo "install:   date first -- a few moments -- and the machine reboots only if that worked."
     ;;
   manual)
     echo "install: mode: manually. Nothing updates the splash for you."
@@ -562,7 +562,7 @@ case "$MODE" in
     echo "install:   lets it do that without asking: any process running as you, in an active"
     echo "install:   local session, may run $PREFIX/bin/omarchy-vfill-retheme"
     echo "install:   as root with no prompt -- that one root-owned program, with no"
-    echo "install:   arguments. Rebuilding still takes about 90 seconds; you just will not"
+    echo "install:   arguments. Rebuilding still takes a few moments; you just will not"
     echo "install:   be asked first. Mode auto is only as safe as that script is correct."
     echo "install:   Remove the rule with ./uninstall.sh, or by re-installing in another mode."
     ;;
