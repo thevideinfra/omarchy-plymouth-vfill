@@ -437,9 +437,25 @@ run_root /bin/bash -c '
   # operator to walk away from a half-applied splash.
   echo "install: privileged install/retheme step failed." >&2
   echo "install:   Depending on how far it got, $PREFIX, the recorded mode and" >&2
-  echo "install:   mode reboot's or mode auto's artefacts may already be in place," >&2
+  echo "install:   mode reboot's command and desktop entry may already be in place," >&2
   echo "install:   and the live Plymouth theme and the Plymouth default may already have been" >&2
   echo "install:   changed with an initramfs that does not yet match them." >&2
+  # The polkit rule is named on its own rather than lumped in with "mode auto's
+  # artefacts": it is the one artefact here with a security meaning, and the
+  # transaction installs it before the retheme it then failed at, so it really can
+  # be live after a failure. An operator who walks away from this message needs to
+  # know that specifically.
+  if [[ $MODE == auto ]]; then
+    echo "install:   In particular $POLKIT_RULE may already be" >&2
+    echo "install:   installed and live, and while it is," >&2
+    echo "install:   $PREFIX/bin/omarchy-vfill-retheme can be run as root with no" >&2
+    echo "install:   password by any process running as you in an active local session." >&2
+  else
+    echo "install:   This run would also have removed mode auto's polkit rule at" >&2
+    echo "install:   $POLKIT_RULE; whether it got that far is" >&2
+    echo "install:   unknown, so if a previous install used mode auto, assume that rule" >&2
+    echo "install:   may still be live and still granting passwordless root." >&2
+  fi
   echo "install:   No theme-set hook was installed or removed by this run;" >&2
   echo "install:   one left by a previous install is still active." >&2
   echo "install:   Re-run ./install.sh to finish the job, or ./uninstall.sh to" >&2

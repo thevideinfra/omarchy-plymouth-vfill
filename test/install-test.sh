@@ -334,6 +334,29 @@ pass "the failure message says what may already be in place"
   fail "the failure message says no hook was installed" "$output"
 pass "the failure message says no hook was installed"
 
+# The polkit rule is the one artefact here with a security meaning, so it is named
+# on its own rather than lumped in with "mode auto's artefacts". Switching away
+# from auto should have removed it, and a failure means that may not have happened.
+[[ $output == *"$rule"* ]] ||
+  fail "a failed install names the polkit rule path specifically" "$output"
+[[ $output == *"may still be live"* && $output == *"passwordless root"* ]] ||
+  fail "a failed install says the rule may still be granting passwordless root" "$output"
+pass "a failed install in another mode names the polkit rule and what it may still grant"
+
+# In mode auto the rule is installed by the transaction before the retheme it then
+# failed at, so it really can be live even though the install did not finish.
+rm -f -- "$hook" "$argv"
+output=$(STUB_ELEVATE_EXIT=1 run_install "" --mode auto --i-understand)
+[[ $? -ne 0 ]] || fail "install fails when the privileged step fails in mode auto"
+pass "install fails when the privileged step fails in mode auto"
+[[ $output == *"$rule"* ]] ||
+  fail "a failed mode auto install names the polkit rule path" "$output"
+[[ $output == *"may already be"* && $output == *"installed and live"* ]] ||
+  fail "a failed mode auto install says the rule may already be live" "$output"
+[[ $output == *"no"*"password"* ]] ||
+  fail "a failed mode auto install says what the live rule allows" "$output"
+pass "a failed mode auto install names the rule and says it may already be live"
+
 # --- The transaction's copies landed and only its retheme failed. ---------
 # STUB_ELEVATE_EXIT=1 above refuses before running anything, so it only ever
 # exercised the case where nothing happened. The interesting failure is the
@@ -630,9 +653,38 @@ grep -qE '^pkexec "\$RETHEME"$' "$hook" ||
 pass "mode auto's hook escalates with no arguments"
 # The rule is root-owned, so only the privileged transaction may write it; the
 # unprivileged half must not have produced it itself.
+#
+# What that assertion can and cannot show: nothing in this file runs the privileged
+# transaction for real -- the elevate stub only records its arguments -- so a
+# missing $rule here means exactly one thing, that the UNPRIVILEGED half never
+# writes it. The rule being installed and removed for real is covered by the
+# namespace replay at the end of this file. On its own, "the file is absent" could
+# not fail, because nothing here would have created it either; so the same claim is
+# made again below against a seeded file, where writing it WOULD show.
 [[ ! -e $rule ]] ||
   fail "the unprivileged half writes no polkit rule of its own" "$(ls -l "$rule")"
 pass "the unprivileged half writes no polkit rule of its own"
+
+# Seeded with a sentinel: an unprivileged half that wrote the rule would overwrite
+# this, and one that removed it would delete it. Only root, inside the
+# transaction, may do either.
+sentinel='// seeded by install-test; the unprivileged half must not touch this'
+printf '%s\n' "$sentinel" >"$rule"
+rm -f -- "$hook" "$argv"
+run_install "" --mode auto --i-understand >/dev/null
+assert_equals "0" "$?" "a mode auto install over a seeded rule file succeeds"
+assert_equals "$sentinel" "$(cat "$rule" 2>&1)" \
+  "the unprivileged half neither writes nor removes the polkit rule"
+rm -f -- "$rule"
+
+# The same for a mode that removes the rule: the removal belongs to the
+# transaction, not to the unprivileged half.
+printf '%s\n' "$sentinel" >"$rule"
+rm -f -- "$hook" "$argv"
+run_install "" --mode manual >/dev/null
+assert_equals "$sentinel" "$(cat "$rule" 2>&1)" \
+  "the unprivileged half does not remove the polkit rule in a mode that drops it"
+rm -f -- "$rule"
 [[ $output == *"$rule"* ]] || fail "mode auto names the rule it installed" "$output"
 pass "mode auto names the rule it installed"
 [[ $output == *"with no prompt"* ]] ||
@@ -710,12 +762,24 @@ done
 pass "the consent text claims nothing the rule does not deliver"
 
 # --- Mode auto is refused where the rule could never work. ---------------
+# The "rules.d is missing" refusal is about a polkit too old to have a rules.d at
+# all (pre-0.106), which on this machine cannot be arranged by deleting
+# /etc/polkit-1/rules.d. It is reached instead through a scratch path that really
+# is absent -- and that precondition is asserted here rather than assumed, both
+# before and after, so this can never quietly become a test of something else.
+# The gate on VFILL_POLKIT_RULES_DIR deliberately accepts a path that does not
+# exist yet for exactly this reason.
+missing_rules_dir_case="$scratch/no-such-rules.d"
+[[ ! -e $missing_rules_dir_case ]] ||
+  fail "prerequisite: the missing rules directory really is missing" \
+    "$(ls -ld "$missing_rules_dir_case")"
+pass "prerequisite: the rules directory used for the missing-rules-dir case is absent"
 
 for why in missing-rules-dir not-in-wheel; do
   rm -f -- "$hook" "$argv"
   if [[ $why == missing-rules-dir ]]; then
     output=$(HOME="$home" PATH="$stubs:$PATH" \
-      VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$scratch/no-such-rules.d" \
+      VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$missing_rules_dir_case" \
       bash "$ROOT/install.sh" --mode auto --i-understand </dev/null 2>&1)
   else
     output=$(HOME="$home" PATH="$stubs:$PATH" VFILL_TEST_POLKIT_RULES_DIR=1 VFILL_POLKIT_RULES_DIR="$rules_dir" \
@@ -734,8 +798,11 @@ for why in missing-rules-dir not-in-wheel; do
     fail "the refusal points at mode theme-set: $why" "$output"
 
   if [[ $why == missing-rules-dir ]]; then
-    [[ $output == *"$scratch/no-such-rules.d does not exist"* && $output == *"0.106"* ]] ||
+    [[ $output == *"$missing_rules_dir_case does not exist"* && $output == *"0.106"* ]] ||
       fail "the refusal names the missing rules directory and the polkit version" "$output"
+    [[ ! -e $missing_rules_dir_case ]] ||
+      fail "the refusal does not create the rules directory it refused over" \
+        "$(ls -ld "$missing_rules_dir_case")"
   else
     [[ $output == *"not in group wheel"* ]] ||
       fail "the refusal says the user is not in group wheel" "$output"
