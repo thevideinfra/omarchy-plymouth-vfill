@@ -61,7 +61,21 @@ vfill_run_bounded() {
 # a TOCTOU check that defends nothing -- the file can become a FIFO in the window
 # between the test and sed's open -- while making the FIFO case look handled
 # instead of bounded. The bound is what defends; -e survives only so a theme with
-# no colors.toml at all returns quietly rather than through sed's stderr.
+# no colors.toml at all returns quietly. A colors.toml that exists but is a
+# directory, a device node or anything else sed cannot read now fails through
+# sed's stderr instead of silently, which -f used to swallow.
+#
+# What this costs, stated honestly. The bound is per read, not per run, and a
+# FIFO fed by a cooperating writer can let every read SUCCEED just inside the
+# bound rather than fail: six colour reads plus the logo open then hold
+# /run/lock/omarchy-vfill.lock for close to seven times the bound -- about 140 s
+# at the 20 s default -- blocking every later retheme and the whole of
+# uninstall.sh's privileged transaction, repeatably, and in mode auto without a
+# password. That is an availability cost against the user's own theme directory
+# by a process already running as them, and it replaces a hold that was
+# unbounded, so it is accepted rather than fixed. Capping the whole read phase,
+# or reading colors.toml once through a single bounded child and parsing the
+# copy, is what would close it.
 #
 # A bound is the whole requirement here, and there is deliberately no inode
 # ownership check: root legitimately reads a colors.toml it does not own, nothing

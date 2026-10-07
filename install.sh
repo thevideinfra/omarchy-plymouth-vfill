@@ -222,7 +222,10 @@ check_rule_path() {
   # naming some other prefix passes cmp perfectly well against a shipped rule
   # naming the same other prefix, and mode auto would then hand passwordless root
   # to a program this installer never installs.
-  polkit_rule_expected | grep -qF "$PREFIX/bin/omarchy-vfill-retheme" || {
+  # The surrounding quote is part of the match: an unanchored substring would
+  # also accept a rule naming omarchy-vfill-retheme-evil under the same prefix,
+  # which is the same hole one path component further down.
+  polkit_rule_expected | grep -qF "\"$PREFIX/bin/omarchy-vfill-retheme\"" || {
     echo "install: the rule this installer approves does not name" >&2
     echo "install:   $PREFIX/bin/omarchy-vfill-retheme, which is where this" >&2
     echo "install:   installer puts the retheme. The rule grants passwordless root to the" >&2
