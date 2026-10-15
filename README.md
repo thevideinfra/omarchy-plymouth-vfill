@@ -3,6 +3,15 @@
 An Omarchy boot splash where the logo fills from the bottom up as the system
 boots, instead of the stock horizontal progress bar.
 
+![The stock splash with its horizontal bar beside the same splash with the logo
+filling from the bottom up](images/before-after.png)
+
+The fill uses whatever artwork the active theme supplies, so it follows your
+desktop theme rather than imposing one:
+
+![The fill at 55% under the tokyo-night, lumon, vantablack and catppuccin
+themes](images/theme-coverage.png)
+
 ## Why a separate theme
 
 Omarchy's own Plymouth theme lives at `/usr/share/plymouth/themes/omarchy` and
