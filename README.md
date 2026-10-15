@@ -177,7 +177,19 @@ ever installed there, so no mode leaves passwordless root behind.
 
 - Plymouth
 - ImageMagick (`magick`) — already an effective Omarchy dependency
-- One of: `limine-mkinitcpio`, `mkinitcpio`, `dracut`
+- One of: `limine-mkinitcpio` (current Omarchy) or `mkinitcpio` (older Omarchy)
+
+## Omarchy only
+
+This installs onto an Omarchy system and nowhere else. It reads Omarchy's
+active theme, follows Omarchy's own Plymouth conventions, and rebuilds the
+initramfs the way Omarchy does.
+
+On a machine with neither `limine-mkinitcpio` nor `mkinitcpio`, the installer
+refuses rather than guessing. There is deliberately no `dracut` fallback: a
+bare `dracut --force` rebuilds an image named for the running kernel, which is
+not necessarily the file the bootloader loads, so it would report success while
+the splash never changed.
 
 ## Tested
 
@@ -185,10 +197,9 @@ ever installed there, so no mode leaves passwordless root behind.
 | --- | --- |
 | `limine-mkinitcpio` (UKI) | Tested on real hardware |
 | `mkinitcpio -P` | **Untested** — written from documentation |
-| `dracut --force` | **Untested** — written from documentation |
 
 Developed against Omarchy 4.0.4, Plymouth 26.134.222, on an AMD GPU with
-`amdgpu`. If you run one of the untested paths, please report what happened.
+`amdgpu`. If you run the `mkinitcpio -P` path, please report what happened.
 
 ## Known limitations
 

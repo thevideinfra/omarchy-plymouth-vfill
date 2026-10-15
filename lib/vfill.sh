@@ -287,16 +287,21 @@ vfill_marker_matches() {
   return 0
 }
 
-# Mirrors the detection omarchy-plymouth-set performs, with dracut added for
-# distributions that do not use mkinitcpio. Only the limine-mkinitcpio path has
-# been exercised on real hardware; see README.
+# Mirrors the detection omarchy-plymouth-set performs, and nothing more. This
+# is an Omarchy project: limine-mkinitcpio is what current Omarchy uses, and
+# mkinitcpio -P is what it used before that.
+#
+# A dracut branch was deliberately removed rather than left as a courtesy. A
+# bare `dracut --force` writes an image named for the running kernel, which is
+# not necessarily the file the bootloader loads, so it would succeed while the
+# splash never changed -- a silent wrong result, worse than the loud refusal
+# below. Supporting dracut properly means passing the output path and kernel
+# version, and nobody has tested that here.
 vfill_initramfs_command() {
   if command -v limine-mkinitcpio >/dev/null; then
     printf 'limine-mkinitcpio\n'
   elif command -v mkinitcpio >/dev/null; then
     printf 'mkinitcpio -P\n'
-  elif command -v dracut >/dev/null; then
-    printf 'dracut --force\n'
   else
     return 1
   fi

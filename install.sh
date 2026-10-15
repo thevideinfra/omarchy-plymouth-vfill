@@ -312,7 +312,7 @@ for required in magick plymouth-set-default-theme; do
 done
 
 vfill_initramfs_command >/dev/null || {
-  echo "install: no supported initramfs tool (limine-mkinitcpio, mkinitcpio, dracut)" >&2
+  echo "install: no supported initramfs tool (limine-mkinitcpio, mkinitcpio)" >&2
   exit 1
 }
 

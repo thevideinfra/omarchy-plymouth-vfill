@@ -29,13 +29,17 @@ assert_equals "mkinitcpio -P" "$(vfill_initramfs_command)" \
   "mkinitcpio -P is used when limine-mkinitcpio is absent"
 
 /bin/rm "$scratch/bin/mkinitcpio"
-make_stub dracut
-assert_equals "dracut --force" "$(vfill_initramfs_command)" \
-  "dracut is the last resort"
-
-/bin/rm "$scratch/bin/dracut"
 vfill_initramfs_command >/dev/null 2>&1 &&
   fail "no known initramfs tool returns non-zero"
 pass "no known initramfs tool returns non-zero"
+
+# dracut is deliberately not a fallback: a bare `dracut --force` would rebuild
+# an image the bootloader may not load, succeeding while the splash never
+# changed. Refusing is the supported answer off Omarchy.
+make_stub dracut
+vfill_initramfs_command >/dev/null 2>&1 &&
+  fail "dracut alone is refused, not used"
+pass "dracut alone is refused, not used"
+/bin/rm "$scratch/bin/dracut"
 
 PATH="$real_path"
