@@ -19,7 +19,7 @@ desktop theme becomes this project's job.
 ## Install
 
 ```bash
-git clone <repo> ~/Projects/omarchy-plymouth-vfill
+git clone https://github.com/thevideinfra/omarchy-plymouth-vfill.git ~/Projects/omarchy-plymouth-vfill
 cd ~/Projects/omarchy-plymouth-vfill
 ./install.sh
 ```
